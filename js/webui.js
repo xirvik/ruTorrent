@@ -2544,6 +2544,7 @@ $(document).ready(function()
 	Promise.all([
 		import('./backgroundtask.js'),
 		import('./category-list.js'),
+		import('./log_history.js'),
 	]).then(([bgModule, catModule]) => {
 		theWebUI.taskAddTorrents = new bgModule.BackgroundTask();
 		theWebUI.categoryList = createCategoryList(catModule);
