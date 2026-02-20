@@ -1,3 +1,4 @@
 <?php
 
-$defaultTheme = ""; // May be "", "Oblivion", "Dark", "Blue" or "Acid"
+// Default theme. Valid choices: "", "Oblivion", "Dark", "Blue" or "Acid".
+$defaultTheme = "";
