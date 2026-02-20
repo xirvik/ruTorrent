@@ -5,10 +5,10 @@
 	$httpUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36';
 	$httpTimeOut = 30;			// in seconds
 	$httpUseGzip = true;
-	$httpIP = null;				// IP string. Or null for any.
+	$httpIP = "_XIRVIK_IP_ADDRESS";				// IP string. Or null for any.
 	$httpProxy = array
 	(
-		'use'	=> false,
+		'use' 	=> false,
 		'proto'	=> 'http',		// 'http' or 'https'
 		'host'	=> 'PROXY_HOST_HERE',
 		'port'	=> 3128
@@ -28,16 +28,17 @@
 	$do_diagnostic = true;			// Diagnose ruTorrent. Recommended to keep enabled, unless otherwise required.
 	$al_diagnostic = true;			// Diagnose auto-loader. Set to "false" to make composer plugins work.
 
-	$log_file = $_ENV['RU_LOG_FILE'] ?? '/tmp/errors.log'; // path to log file (comment or leave blank to disable logging)
+	$log_file = '/var/log/rtorrent/error_XIRVIK_NUM.log';	// path to log file (comment or leave blank to disable logging)
 
 	$saveUploadedTorrents = true;		// Save uploaded torrents to profile/torrents directory or not
 	$overwriteUploadedTorrents = false;	// Overwrite existing uploaded torrents in profile/torrents directory or make unique name
 
-	$topDirectory = $_ENV['RU_TOP_DIR'] ?? '/';			// Upper available directory. Absolute path with trail slash.
-	$forbidUserSettings = false;
+	$topDirectory = '_XIRVIK_TOPDIRECTORY';	// Upper available directory. Absolute path with trail slash.
+	$topDirectory = rtrim($topDirectory, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+	$forbidUserSettings = true;
 
-	$scgi_port = $_ENV['RU_SCGI_PORT'] ?? 5000;
-	$scgi_host = $_ENV['RU_SCGI_HOST'] ?? "127.0.0.1";
+	$scgi_port = _XIRVIK_SCGI_PORT;
+	$scgi_host = "127.0.0.1";
 
 	// For web->rtorrent link through unix domain socket
 	// (scgi_local in rtorrent conf file), change variables
@@ -52,20 +53,18 @@
 	// Can't be greater then 327625*1024 due to limitation in libtorrent ResourceManager::set_max_upload_unchoked function.
 
 	$pathToExternals = array(
-		"php"	=> '',			// Something like /usr/bin/php. If empty, will be found in PATH.
-		"curl"	=> '',			// Something like /usr/bin/curl. If empty, will be found in PATH.
-		"gzip"	=> '',			// Something like /usr/bin/gzip. If empty, will be found in PATH.
-		"id"	=> '',			// Something like /usr/bin/id. If empty, will be found in PATH.
-		"stat"	=> '',			// Something like /usr/bin/stat. If empty, will be found in PATH.
+		"php"	=> '/usr/bin/php',
+		"curl"	=> '/usr/bin/curl',
+		"gzip"	=> '/bin/gzip',
+		"id"	=> '/usr/bin/id',
+		"stat"	=> '/usr/bin/stat',
+		"sudo"	=> '/usr/bin/sudo',
+		"mktorrent"	=> '/usr/local/bin/mktorrent'
 	);
 
-	$localHostedMode = false;		// Set to true if rTorrent is hosted on the SAME machine as ruTorrent
-	
-	$cachedPluginLoading = false;		// Set to true to enable rapid cached loading of ruTorrent plugins
-										// Required to clear web browser cache when upgrading versions	
+	$localHostedMode = true;		// Set to true if rTorrent is hosted on the SAME machine as ruTorrent
 
-	$pluginMinification = true; 	// Stable change to reduce loading times by minimizing JavaScript networked
-									// Only recommended to disable when required for debuging purposes
+	$pluginMinification = true;		// Reduce loading times by minimizing JavaScript (new in v5.x)
 
 	$localhosts = array(			// list of local interfaces
 		"::1",
@@ -73,14 +72,12 @@
 		"localhost",
 	);
 
-    getenv("RU_LOCALHOSTS") && $localhosts[] = $_ENV['RU_LOCALHOSTS'];
-
-	$profilePath = $_ENV['RU_PROFILE_PATH'] ?? '../../share';		// Path to user profiles
-	$profileMask = $_ENV['RU_PROFILE_MASK'] ?? 0777;			// Mask for files and directory creation in user profiles.
+	$profilePath = '../../share';		// Path to user profiles
+	$profileMask = 0777;			// Mask for files and directory creation in user profiles.
 						// Both Webserver and rtorrent users must have read-write access to it.
 						// For example, if Webserver and rtorrent users are in the same group then the value may be 0770.
 
-	$tempDirectory = $_ENV['RU_TEMP_DIRECTORY'] ?? null; // Temp directory. Absolute path. If null, then autodetect will be used.
+	$tempDirectory = '_XIRVIK_TEMP_PATH';	// Temporary directory; use one in the user's partition because /tmp might be too small
 
 	$canUseXSendFile = false;		// If true then use X-Sendfile feature if it exist
 
