@@ -4,7 +4,7 @@
 @define('HISTORY_MAX_TRY', 3);
 @define('WAIT_AFTER_LOADING', 0);
 
-$minInterval = _XIRVIK_RSS_UPDATE_INTERVAL;	// in minutes
+$minInterval = 2;	// in minutes
 
 $feedsWithIncorrectTimes = array
 (
