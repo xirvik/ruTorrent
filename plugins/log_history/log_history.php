@@ -45,7 +45,7 @@ class LogHandler
         $this->cache = $cache;
     }
 
-    public function saveLog($message, $status)
+    public function saveLog($message, $status, $timestamp = null)
     {
         if (empty($message)) {
             return ['status' => 'error', 'message' => 'No message provided'];
@@ -57,7 +57,11 @@ class LogHandler
             }
         }
 
-        $this->logs[] = ['message' => $message, 'status' => $status];
+        $this->logs[] = [
+            'message' => $message,
+            'status' => $status,
+            'timestamp' => $timestamp ? intval($timestamp) : time()
+        ];
 
         if (count($this->logs) > $this->max_entries) {
             $this->logs = array_slice($this->logs, -$this->max_entries);
@@ -84,7 +88,8 @@ class LogHandler
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $msg  = trim($_POST['message'] ?? '');
             $st   = trim($_POST['status'] ?? '');
-            $resp = $handler->saveLog($msg, $st);
+            $ts   = $_POST['timestamp'] ?? null;
+            $resp = $handler->saveLog($msg, $st, $ts);
         } else {
             global $LogTab_array;
             $resp = [

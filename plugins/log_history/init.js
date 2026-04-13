@@ -2,7 +2,7 @@ function stripTimestamp(line) {
     return line.replace(/^\[[^\]]*\]\s*/, '');
 }
 
-function fetchLogLines(initialLoad = false) {
+function fetchLogLines() {
     fetch('plugins/log_history/action.php')
         .then(response => {
             if (response.status === 204) {
@@ -13,25 +13,48 @@ function fetchLogLines(initialLoad = false) {
         })
         .then(data => {
             const logs = data.logs || data;
-            const style = data.load_style || 'noty';
 
             if (!logs.length) {
                 return;
             }
 
-            // Temporarily unhook to avoid re-saving logs we just fetched
             plugin._replaying = true;
-            logs.forEach(entry => {
-                const rawMsg = entry.message || '';
-                const cleanMsg = stripTimestamp(rawMsg);
-                const status = entry.status || 'info';
+            var lcont = document.getElementById('lcont');
+            if (lcont) {
+                // Save current content (e.g. "WebUI started")
+                var currentContent = lcont.innerHTML;
+                // Clear and rebuild in order
+                lcont.innerHTML = '';
 
-                if (style === 'log') {
-                    log(cleanMsg, false, 'std');
-                } else {
-                    plugin._originalNoty(cleanMsg, status);
-                }
-            });
+                // Header
+                var header = document.createElement('span');
+                header.className = 'std';
+                header.textContent = '========== restored log ==========';
+                lcont.appendChild(header);
+
+                // Restored entries
+                logs.forEach(entry => {
+                    var cleanMsg = stripTimestamp(entry.message || '');
+                    var ts = entry.timestamp
+                        ? '[' + theConverter.date(entry.timestamp) + ']'
+                        : '';
+                    var span = document.createElement('span');
+                    span.className = 'std';
+                    span.textContent = ts + ' ' + cleanMsg;
+                    lcont.appendChild(span);
+                });
+
+                // Footer
+                var footer = document.createElement('span');
+                footer.className = 'std';
+                footer.textContent = '========== restored log ==========';
+                lcont.appendChild(footer);
+
+                // Re-append current session content
+                lcont.innerHTML += currentContent;
+
+                lcont.scrollTop = lcont.scrollHeight;
+            }
             plugin._replaying = false;
         })
         .catch(err => {
@@ -41,12 +64,15 @@ function fetchLogLines(initialLoad = false) {
 }
 
 function sendLogToServer(msg, status) {
+    var timestamp = Math.floor(Date.now() / 1000);
     fetch('plugins/log_history/log_history.php', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
         },
-        body: 'message=' + encodeURIComponent(msg) + '&status=' + encodeURIComponent(status)
+        body: 'message=' + encodeURIComponent(msg)
+            + '&status=' + encodeURIComponent(status)
+            + '&timestamp=' + timestamp
     })
     .catch(error => {
         console.log("Saving Log failed:", error);
@@ -66,10 +92,7 @@ plugin.init = function () {
         }
     };
 
-    setTimeout(() => {
-        fetchLogLines(true);
-    }, 3000);
-
+    fetchLogLines();
     plugin.markLoaded();
 };
 
