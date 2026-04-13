@@ -1,26 +1,26 @@
 function stripTimestamp(line) {
-        return line.replace(/^\[[^\]]*\]\s*/, '');
+    return line.replace(/^\[[^\]]*\]\s*/, '');
 }
 
 function fetchLogLines(initialLoad = false) {
     fetch('plugins/log_history/action.php')
         .then(response => {
             if (response.status === 204) {
-                console.log("Log is disabled by server (204 No Content).");
                 return Promise.reject({ disabled: true });
             }
             if (!response.ok) throw new Error('Network response was not ok');
             return response.json();
         })
         .then(data => {
-            const logs = data.logs || data; // backward compatible
-            const style = data.load_style || 'noty'; // default
+            const logs = data.logs || data;
+            const style = data.load_style || 'noty';
 
             if (!logs.length) {
-                console.log("Log is empty or not configured.");
                 return;
             }
 
+            // Temporarily unhook to avoid re-saving logs we just fetched
+            plugin._replaying = true;
             logs.forEach(entry => {
                 const rawMsg = entry.message || '';
                 const cleanMsg = stripTimestamp(rawMsg);
@@ -29,17 +29,14 @@ function fetchLogLines(initialLoad = false) {
                 if (style === 'log') {
                     log(cleanMsg, false, 'std');
                 } else {
-                    noty(cleanMsg, status);
+                    plugin._originalNoty(cleanMsg, status);
                 }
             });
+            plugin._replaying = false;
         })
         .catch(err => {
             if (err.disabled) return;
-            if (typeof noty === 'function') {
-                noty("Log fetch error: " + err.message, "error");
-            } else {
-                console.error("Log fetch error:", err.message);
-            }
+            console.error("Log fetch error:", err.message);
         });
 }
 
@@ -49,40 +46,26 @@ function sendLogToServer(msg, status) {
         headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
         },
-        body: `message=${encodeURIComponent(msg)}&status=${encodeURIComponent(status)}`
+        body: 'message=' + encodeURIComponent(msg) + '&status=' + encodeURIComponent(status)
     })
-        .then(response => {
-            if (response.status === 204) return;
-            return response.json();
-        })
-        .then(data => {
-            if (data) console.log("Log saved to server:", data);
-        })
-        .catch(error => {
-            console.log("Saving Log failed:", error);
-        });
+    .catch(error => {
+        console.log("Saving Log failed:", error);
+    });
 }
 
-window._log_history_status = null;
+plugin._replaying = false;
 
 plugin.init = function () {
-    const originalLog = window.log;
-    window.log = function(text, noTime, divClass, force) {
-        originalLog(text, noTime, divClass, force);
-        const status = window._log_history_status || divClass || 'info';
-        sendLogToServer(text, status);
-        window._log_history_status = null;
-    };
+    plugin._originalNoty = window.noty;
     const originalNoty = window.noty;
-    window.noty = function(msg, status, noTime) {
-        window._log_history_status = status;
 
-        if (typeof originalNoty === 'function') {
-            originalNoty(msg, status, noTime);
-        } else {
-            log(msg, noTime, status);
+    window.noty = function(msg, status, noTime) {
+        originalNoty(msg, status, noTime);
+        if (!plugin._replaying) {
+            sendLogToServer(msg, status || 'info');
         }
     };
+
     setTimeout(() => {
         fetchLogLines(true);
     }, 3000);
