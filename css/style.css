@@ -655,6 +655,10 @@ span#loadimg {padding: 20px; background: transparent url(../images/ajax-loader.g
   margin-top: 5px;
   color: #000000;
   white-space: nowrap;
+  scrollbar-width: none;
+}
+#StatusBar::-webkit-scrollbar {
+    display: none;
 }
 #StatusBar .icon {
   height: 16px;
