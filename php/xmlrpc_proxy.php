@@ -24,9 +24,24 @@ class XMLRPCProxy
 {
 	// Methods that need trusted connections but can carry command
 	// parameters. We rebuild these from scratch, keeping only safe params.
+	//
+	// A command that is not kept costs a label or a directory and the torrent
+	// is still added, so an unknown one is dropped rather than made to fail
+	// the whole call.
 	private static $sanitizeMethods = array(
 		'load.start', 'load.raw_start', 'load.raw', 'load.normal',
 		'load_start', 'load_raw_start', 'load_raw',
+	);
+
+	// Multicalls carry commands in the same trailing position, and the same
+	// rebuilding applies — but for these the commands ARE the request, and
+	// most of them are read commands (d.name=, t.url=) that no allowlist
+	// should have to enumerate. Dropping one would answer with a short row and
+	// no fault, so a command this side does not rebuild sends the request on
+	// untouched instead, for rtorrent's own gate to judge.
+	private static $multicallMethods = array(
+		'd.multicall', 'd.multicall2', 'd.multicall.filtered',
+		't.multicall', 'f.multicall', 'p.multicall',
 	);
 
 	private static $log = true;
@@ -145,6 +160,21 @@ class XMLRPCProxy
 			return self::forward($rebuilt['xml'], $trusted, $line);
 		}
 
+		if(in_array($methodName, self::$multicallMethods, true))
+		{
+			$rebuilt = self::rebuildLoadParams($xml, $methodName, $safeParams);
+
+			if(count($rebuilt['stripped']) > 0)
+				return self::forward($rawData, false, "untrusted: ".$methodName." (".
+					count($rebuilt['stripped'])." command parameters this side does not rebuild)");
+
+			$trusted = $rebuilt['rebuiltAll'];
+			$state = $trusted ? "trusted" : "untrusted (a parameter could not be rebuilt)";
+
+			return self::forward($rebuilt['xml'], $trusted,
+				$state.": ".$methodName." (".$rebuilt['kept']." params)");
+		}
+
 		// Unknown method — pass through as untrusted.
 		// rtorrent's own whitelist will allow/reject.
 		return self::forward($rawData, false, "untrusted: ".self::logValue($methodName));
@@ -163,7 +193,7 @@ class XMLRPCProxy
 	}
 
 	/**
-	 * Rebuild one load.* command parameter, or return null to drop it.
+	 * Rebuild one command parameter, or return null to drop it.
 	 *
 	 * A parameter is not a single command: rtorrent ends a command at ';' or a
 	 * newline and calls a parenthesised (command,args) found in a value, so a
@@ -215,7 +245,7 @@ class XMLRPCProxy
 	}
 
 	/**
-	 * Extract a load.* command-param value from its <value> element.
+	 * Extract a command-param value from its <value> element.
 	 *
 	 * Handles both the typed form <value><string>foo</string></value> and
 	 * the implicit-string form <value>foo</value>. For non-string types
@@ -230,12 +260,18 @@ class XMLRPCProxy
 	}
 
 	/**
-	 * Rebuild a load.* call keeping only safe parameters.
+	 * Rebuild a command-carrying call keeping only safe parameters.
 	 *
-	 *   Param 0: target           (always kept)
-	 *   Param 1: URL or raw data  (always kept)
+	 *   Param 0: target                    (always kept)
+	 *   Param 1: URL, raw data, or view    (always kept)
 	 *   Param 2+: command strings (kept iff the command name is in the
 	 *                              whitelist, otherwise stripped)
+	 *
+	 * Both families put their commands at param 2: load.start, load.normal,
+	 * load.raw, load.raw_start, d.multicall, d.multicall2,
+	 * d.multicall.filtered and t/f/p.multicall all do, on 0.9.8 and on 0.16.x
+	 * alike. Measured by side effect against both, rather than read off a
+	 * signature — the caller acts on the answer by deciding what is data.
 	 *
 	 * Public for unit testing — production callers should go through
 	 * process().

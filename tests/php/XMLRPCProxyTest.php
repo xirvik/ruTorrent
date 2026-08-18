@@ -380,4 +380,99 @@ class XMLRPCProxyTest extends TestCase
 		$this->assertTrue(strpos($this->logText(), "\nxmlrpc-proxy: trusted") === false,
 			'a method name cannot start a log line of its own');
 	}
+
+	// ---- multicalls carry commands too ----
+
+	private function multicall($params, $safeParams = array('d.custom1.set'))
+	{
+		$this->resetMocks();
+		$xml = '<?xml version="1.0"?><methodCall><methodName>d.multicall2</methodName><params>';
+		foreach($params as $param)
+			$xml .= '<param><value><string>' . htmlspecialchars($param, ENT_NOQUOTES)
+				. '</string></value></param>';
+		$xml .= '</params></methodCall>';
+		XMLRPCProxy::process($xml, 'sanitize', true, $safeParams);
+		return $xml;
+	}
+
+	public function testMulticallCommandsAreRebuiltLikeLoadParams()
+	{
+		$this->multicall(array('', 'main', 'd.custom1.set=Movies (2024)'));
+		$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload,
+			'd.custom1.set="Movies (2024)"') !== false,
+			'an allowed command in a multicall is quoted the same way as in a load');
+		$this->assertTrue(rXMLRPCRequest::$lastTrusted === true,
+			'and a multicall of nothing but allowed commands may be trusted');
+	}
+
+	/**
+	 * The one place multicalls differ from load.*: a load can lose a command
+	 * and still add the torrent, but a multicall's commands are the request.
+	 * Dropping one would answer with a short row and no fault, so the request
+	 * goes on untouched and rtorrent's own gate decides.
+	 */
+	public function testMulticallWithAnUnknownCommandIsForwardedUntouched()
+	{
+		$sent = $this->multicall(array('', 'main', 'd.name='));
+		$this->assertTrue(rXMLRPCRequest::$lastPayload === $sent,
+			'the request is forwarded byte for byte, not rebuilt');
+		$this->assertTrue(rXMLRPCRequest::$lastTrusted === false,
+			'and untrusted, so rtorrent applies its own restrictions');
+	}
+
+	public function testMulticallNeverSilentlyDropsACommand()
+	{
+		$this->multicall(array('', 'main', 'd.custom1.set=label', 'd.name='));
+		$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload, 'd.name=') !== false,
+			'a read command is not stripped out of the caller\'s multicall');
+		$this->assertTrue(rXMLRPCRequest::$lastTrusted === false,
+			'the mixed call goes untrusted rather than losing a command');
+	}
+
+	public function testMulticallCarryingExecuteIsNeverTrusted()
+	{
+		$this->multicall(array('', 'main', 'execute.capture=/bin/sh,-c,id'));
+		$this->assertTrue(rXMLRPCRequest::$lastTrusted === false,
+			'a multicall carrying execute.capture is never trusted');
+	}
+
+	public function testMulticallDollarArgumentIsNeverTrusted()
+	{
+		$this->multicall(array('', 'main', 'd.custom1.set=$execute.capture=/bin/hostname'));
+		$this->assertTrue(rXMLRPCRequest::$lastTrusted === false,
+			'an allowed command whose argument would be re-parsed is not trusted');
+		$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload, 'execute.capture') !== false,
+			'the original is forwarded rather than a rebuilt one, so nothing is smuggled in quoted');
+	}
+
+	public function testMulticallViewNameIsDataNotACommand()
+	{
+		$this->multicall(array('', 'd.custom1.set=notacommand', 'd.custom1.set=label'));
+		$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload,
+			'<string>d.custom1.set=notacommand</string>') !== false,
+			'the view name is re-emitted as the value it is, not quoted as a command');
+	}
+
+	public function testCommandCarryingMethodsList()
+	{
+		$ref = new ReflectionProperty('XMLRPCProxy', 'multicallMethods');
+		$ref->setAccessible(true);
+		$methods = $ref->getValue();
+		$this->assertTrue(in_array('d.multicall2', $methods), 'd.multicall2 is command-carrying');
+		$this->assertTrue(in_array('t.multicall', $methods), 't.multicall is command-carrying');
+		$this->assertTrue(!in_array('system.multicall', $methods),
+			'system.multicall is NOT: its members are calls, not command strings');
+		$this->assertTrue(!in_array('load.start', $methods),
+			'load.start belongs to the list that strips, not this one');
+	}
+
+	public function testSystemMulticallIsStillForwardedUntouched()
+	{
+		$this->resetMocks();
+		$xml = '<?xml version="1.0"?><methodCall><methodName>system.multicall</methodName>'
+			. '<params><param><value><string>x</string></value></param></params></methodCall>';
+		XMLRPCProxy::process($xml, 'sanitize', true, array('d.custom1.set'));
+		$this->assertTrue(rXMLRPCRequest::$lastPayload === $xml, 'forwarded byte for byte');
+		$this->assertTrue(rXMLRPCRequest::$lastTrusted === false, 'and untrusted');
+	}
 }
