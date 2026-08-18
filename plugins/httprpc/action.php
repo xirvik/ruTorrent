@@ -657,7 +657,8 @@ switch($mode)
 			$proxyMode = isset($XMLRPCProxy) ? $XMLRPCProxy : 'sanitize';
 			$proxyLog = isset($XMLRPCProxyLog) ? $XMLRPCProxyLog : true;
 			$proxySafeParams = isset($XMLRPCProxySafeParams) ? $XMLRPCProxySafeParams : array();
-			$result = XMLRPCProxy::process($HTTP_RAW_POST_DATA, $proxyMode, $proxyLog, $proxySafeParams);
+			$proxyLocalPaths = isset($XMLRPCProxyAllowLocalPaths) ? $XMLRPCProxyAllowLocalPaths : false;
+			$result = XMLRPCProxy::process($HTTP_RAW_POST_DATA, $proxyMode, $proxyLog, $proxySafeParams, $proxyLocalPaths);
 			if(!empty($result))
 			{
 				$pos = strpos($result, "\r\n\r\n");

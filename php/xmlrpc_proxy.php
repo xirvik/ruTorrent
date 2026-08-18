@@ -33,6 +33,27 @@ class XMLRPCProxy
 		'load_start', 'load_raw_start', 'load_raw',
 	);
 
+	// Of those, the ones whose parameter 1 is a URI rather than the torrent
+	// itself. rtorrent treats anything that is not a network or magnet URI as a
+	// path on its own filesystem, opens it, and ties the download to it — see
+	// $networkUri.
+	//
+	// The 0.9.x spellings are deliberately absent. They exist on no rtorrent
+	// this supports (0.9.8 and 0.16.x both answer "not defined"), and they put
+	// the URI one parameter earlier, so testing parameter 1 would read a
+	// command string as the URI and refuse a valid call. A load that does not
+	// happen ties nothing, so there is nothing to protect there.
+	private static $uriLoadMethods = array(
+		'load.start', 'load.normal',
+	);
+
+	// Exactly the URIs rtorrent does not treat as a local path:
+	// is_network_uri() and is_magnet_uri() in core/download_factory.cc, which
+	// use strncmp and are therefore case-sensitive. This has to agree with
+	// them character for character — accepting a form rtorrent reads as a path
+	// would be the hole this closes.
+	private static $networkUri = '#^(?:http://|https://|ftp://|magnet:\?)#';
+
 	// Multicalls carry commands in the same trailing position, and the same
 	// rebuilding applies — but for these the commands ARE the request, and
 	// most of them are read commands (d.name=, t.url=) that no allowlist
@@ -89,13 +110,15 @@ class XMLRPCProxy
 	 * @param string $mode        "off", "passthrough_unsafe", or "sanitize"
 	 * @param bool   $enableLog   Enable/disable logging
 	 * @param array  $safeParams  Command names allowed as load.* params, matched exactly
+	 * @param bool   $allowLocalPaths  Let a caller name a path on rtorrent's own
+	 *                                 filesystem in load.start / load.normal
 	 * @return string|null        SCGI response, or null on rejection
 	 */
-	public static function process($rawData, $mode = 'sanitize', $enableLog = true, $safeParams = array())
+	public static function process($rawData, $mode = 'sanitize', $enableLog = true, $safeParams = array(), $allowLocalPaths = false)
 	{
 		self::$log = $enableLog;
 
-		$decision = self::decide($rawData, $mode, $safeParams);
+		$decision = self::decide($rawData, $mode, $safeParams, $allowLocalPaths);
 
 		foreach($decision['log'] as $line)
 			self::log($line);
@@ -117,12 +140,18 @@ class XMLRPCProxy
 	 * @param string $rawData     Raw XMLRPC XML from the client
 	 * @param string $mode        "off", "passthrough_unsafe", or "sanitize"
 	 * @param array  $safeParams  Command names allowed as load.* params, matched exactly
+	 * @param bool   $allowLocalPaths  Let a caller name a path on rtorrent's own
+	 *                                 filesystem in load.start / load.normal.
+	 *                                 Off by default: a remote client has no way
+	 *                                 to know what is on that filesystem, and the
+	 *                                 path it names becomes the download's tied
+	 *                                 file, which d.delete_tied then unlinks.
 	 * @return array  'action'  => "send" or "reject"
 	 *                'payload' => the bytes to send, empty when rejecting
 	 *                'trusted' => whether the connection carrying them may be trusted
 	 *                'log'     => what happened, in the order it happened
 	 */
-	public static function decide($rawData, $mode = 'sanitize', $safeParams = array())
+	public static function decide($rawData, $mode = 'sanitize', $safeParams = array(), $allowLocalPaths = false)
 	{
 		if($mode === 'off')
 			return self::reject("rejected (proxy disabled)");
@@ -139,6 +168,14 @@ class XMLRPCProxy
 
 		if(in_array($methodName, self::$sanitizeMethods, true))
 		{
+			if(!$allowLocalPaths && in_array($methodName, self::$uriLoadMethods, true))
+			{
+				$uri = self::loadUri($xml);
+				if(($uri !== null) && !preg_match(self::$networkUri, $uri))
+					return self::reject("rejected (load from a local path): ".
+						$methodName." ".self::logValue($uri));
+			}
+
 			$rebuilt = self::rebuildLoadParams($xml, $methodName, $safeParams);
 
 			// Trusted only when every parameter was rebuilt from parts this
@@ -178,6 +215,35 @@ class XMLRPCProxy
 		// Unknown method — pass through as untrusted.
 		// rtorrent's own whitelist will allow/reject.
 		return self::forward($rawData, false, "untrusted: ".self::logValue($methodName));
+	}
+
+	/**
+	 * The URI a load.* call is being asked to fetch, or null when the call does
+	 * not carry one. Read from parameter 1, which is where every version puts
+	 * it — parameter 0 is the target.
+	 */
+	private static function loadUri($xml)
+	{
+		if(!isset($xml->params->param))
+			return null;
+		$index = 0;
+		foreach($xml->params->param as $param)
+		{
+			if($index === 1)
+			{
+				// A base64 parameter is still a URI as far as rtorrent is
+				// concerned: it decodes to the string it opens. Read it the
+				// same way, so encoding it is not a way past this.
+				if(isset($param->value->base64))
+				{
+					$decoded = base64_decode((string)$param->value->base64, true);
+					return ($decoded === false) ? '' : $decoded;
+				}
+				return self::extractParamValue($param->value);
+			}
+			$index++;
+		}
+		return null;
 	}
 
 	private static function forward($payload, $trusted, $line)

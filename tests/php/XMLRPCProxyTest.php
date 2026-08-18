@@ -19,10 +19,12 @@ if(!class_exists('rXMLRPCRequest'))
 	{
 		public static $lastPayload = null;
 		public static $lastTrusted = null;
+		public static $sent = 0;
 		public static function send($data, $trusted)
 		{
 			self::$lastPayload = $data;
 			self::$lastTrusted = $trusted;
+			self::$sent++;
 			return '';
 		}
 	}
@@ -36,6 +38,7 @@ class XMLRPCProxyTest extends TestCase
 	{
 		rXMLRPCRequest::$lastPayload = null;
 		rXMLRPCRequest::$lastTrusted = null;
+		rXMLRPCRequest::$sent = 0;
 		FileUtil::$log = array();
 	}
 
@@ -464,6 +467,104 @@ class XMLRPCProxyTest extends TestCase
 			'system.multicall is NOT: its members are calls, not command strings');
 		$this->assertTrue(!in_array('load.start', $methods),
 			'load.start belongs to the list that strips, not this one');
+	}
+
+	// ---- load.* may not name a path on rtorrent's own filesystem ----
+
+	private function load($uri, $allowLocalPaths = false, $method = 'load.start')
+	{
+		$this->resetMocks();
+		$xml = '<?xml version="1.0"?><methodCall><methodName>' . $method
+			. '</methodName><params>'
+			. '<param><value><string></string></value></param>'
+			. '<param><value><string>' . htmlspecialchars($uri, ENT_NOQUOTES) . '</string></value></param>'
+			. '</params></methodCall>';
+		return XMLRPCProxy::process($xml, 'sanitize', true, array('d.custom1.set'), $allowLocalPaths);
+	}
+
+	public function testLoadFromALocalPathIsRejected()
+	{
+		$this->assertTrue($this->load('/srv/watch/x.torrent') === null,
+			'a load naming a path on rtorrent\'s own filesystem is refused');
+		$this->assertTrue(rXMLRPCRequest::$lastPayload === null,
+			'and nothing is sent, not even untrusted');
+	}
+
+	/**
+	 * Untrusted is not a refusal on rtorrent below 0.16.10 — the header is read
+	 * and ignored — so this one cannot be left for rtorrent to sort out.
+	 */
+	public function testLocalPathIsRefusedRatherThanForwardedUntrusted()
+	{
+		$this->load('/srv/watch/x.torrent');
+		$this->assertTrue(rXMLRPCRequest::$sent === 0, 'the request never reaches rtorrent');
+		$this->assertTrue(strpos($this->logText(), 'local path') !== false,
+			'and the refusal says why');
+	}
+
+	public function testNetworkAndMagnetUrisAreAccepted()
+	{
+		foreach(array('http://example.test/x.torrent', 'https://example.test/x.torrent',
+			'ftp://example.test/x.torrent', 'magnet:?xt=urn:btih:abc') as $uri)
+		{
+			$this->load($uri);
+			$this->assertTrue(rXMLRPCRequest::$sent === 1, $uri . ' is forwarded');
+		}
+	}
+
+	/**
+	 * rtorrent compares these with strncmp, so anything it would not recognise
+	 * as a URI is a path to it, and has to be a path here too. Matching more
+	 * loosely than rtorrent does is exactly the hole this closes.
+	 */
+	public function testSchemeMatchingIsAsStrictAsRtorrents()
+	{
+		foreach(array('HTTP://example.test/x.torrent', 'Magnet:?xt=urn:btih:abc',
+			'magnet:xt=urn:btih:abc', ' http://example.test/x.torrent',
+			'file:///srv/watch/x.torrent', 'watch/x.torrent', '~/x.torrent') as $uri)
+		{
+			$this->assertTrue($this->load($uri) === null, $uri . ' is treated as a local path');
+		}
+	}
+
+	public function testBase64EncodingDoesNotHideALocalPath()
+	{
+		$this->resetMocks();
+		$xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
+			. '<param><value><string></string></value></param>'
+			. '<param><value><base64>' . base64_encode('/srv/watch/x.torrent') . '</base64></value></param>'
+			. '</params></methodCall>';
+		$this->assertTrue(XMLRPCProxy::process($xml, 'sanitize', true, array(), false) === null,
+			'a base64 parameter is read as the URI it decodes to');
+	}
+
+	public function testRawLoadIsUnaffected()
+	{
+		$this->resetMocks();
+		$xml = '<?xml version="1.0"?><methodCall><methodName>load.raw_start</methodName><params>'
+			. '<param><value><string></string></value></param>'
+			. '<param><value><base64>' . base64_encode('d4:infoe') . '</base64></value></param>'
+			. '</params></methodCall>';
+		XMLRPCProxy::process($xml, 'sanitize', true, array(), false);
+		$this->assertTrue(rXMLRPCRequest::$sent === 1,
+			'load.raw_start carries the torrent itself, not a URI, so it is untouched');
+	}
+
+	public function testOperatorCanAllowLocalPaths()
+	{
+		$this->load('/srv/watch/x.torrent', true);
+		$this->assertTrue(rXMLRPCRequest::$sent === 1,
+			'the setting exists for automation that posts server-local paths');
+	}
+
+	public function testLoadUriListDoesNotCoverTheRawMethods()
+	{
+		$ref = new ReflectionProperty('XMLRPCProxy', 'uriLoadMethods');
+		$ref->setAccessible(true);
+		$methods = $ref->getValue();
+		$this->assertTrue(in_array('load.start', $methods), 'load.start takes a URI');
+		$this->assertTrue(!in_array('load.raw_start', $methods),
+			'load.raw_start takes the torrent, so it is not checked');
 	}
 
 	public function testSystemMulticallIsStillForwardedUntouched()
