@@ -432,11 +432,13 @@ class XMLRPCProxyTest extends TestCase
 			'the mixed call goes untrusted rather than losing a command');
 	}
 
-	public function testMulticallCarryingExecuteIsNeverTrusted()
+	public function testMulticallCarryingExecuteIsRefused()
 	{
 		$this->multicall(array('', 'main', 'execute.capture=/bin/sh,-c,id'));
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === false,
-			'a multicall carrying execute.capture is never trusted');
+		$this->assertTrue(rXMLRPCRequest::$sent === 0,
+			'a multicall carrying execute.capture is refused, not forwarded');
+		$this->assertTrue(rXMLRPCRequest::$lastTrusted === null,
+			'and it certainly is not trusted');
 	}
 
 	public function testMulticallDollarArgumentIsNeverTrusted()
@@ -565,6 +567,142 @@ class XMLRPCProxyTest extends TestCase
 		$this->assertTrue(in_array('load.start', $methods), 'load.start takes a URI');
 		$this->assertTrue(!in_array('load.raw_start', $methods),
 			'load.raw_start takes the torrent, so it is not checked');
+	}
+
+	// ---- refused outright, without asking rtorrent ----
+
+	private function callMethod($method, $params = array(), $mode = 'sanitize')
+	{
+		$this->resetMocks();
+		$xml = '<?xml version="1.0"?><methodCall><methodName>' . htmlspecialchars($method)
+			. '</methodName><params>';
+		foreach($params as $p)
+			$xml .= '<param><value><string>' . htmlspecialchars($p, ENT_NOQUOTES) . '</string></value></param>';
+		$xml .= '</params></methodCall>';
+		return XMLRPCProxy::process($xml, $mode, true, array('d.custom1.set'));
+	}
+
+	public function testExecutionPrimitivesAreRefused()
+	{
+		foreach(array('execute', 'execute.capture', 'execute.raw.bg', 'execute2',
+			'method.insert', 'method.set_key', 'import', 'try_import',
+			'schedule', 'schedule2', 'schedule.remove', 'log.execute',
+			'log.open_file', 'network.scgi.open_port', 'catch', 'system.env') as $method)
+		{
+			$this->assertTrue($this->callMethod($method) === null, $method . ' is refused');
+			$this->assertTrue(rXMLRPCRequest::$sent === 0, $method . ' never reaches rtorrent');
+		}
+	}
+
+	/**
+	 * The families are spelled differently across versions — 0.9.8 has execute2
+	 * and schedule_remove2, 0.16.x has execute.raw.bg and schedule.remove — so
+	 * the list matches prefixes. An exact list would go stale silently, and for
+	 * a refusal list that is the wrong way to fail.
+	 */
+	public function testRefusalMatchesTheWholeFamily()
+	{
+		$ref = new ReflectionProperty('XMLRPCProxy', 'denyPrefixes');
+		$ref->setAccessible(true);
+		$this->assertTrue(in_array('execute', $ref->getValue()),
+			'one entry covers every execute spelling');
+		$this->assertTrue($this->callMethod('execute.capture_nothrow') === null,
+			'including the ones not written down anywhere');
+	}
+
+	public function testHarmlessMethodsAreNotCaughtByTheRefusalList()
+	{
+		foreach(array('system.client_version', 'd.name', 'view.list', 'directory.default') as $method)
+		{
+			$this->callMethod($method);
+			$this->assertTrue(rXMLRPCRequest::$sent === 1, $method . ' is still forwarded');
+			$this->assertTrue(rXMLRPCRequest::$lastTrusted === false, $method . ' untrusted');
+		}
+	}
+
+	public function testPassthroughUnsafeIsNotSubjectToTheRefusalList()
+	{
+		$this->callMethod('execute.capture', array('', '/bin/sh'), 'passthrough_unsafe');
+		$this->assertTrue(rXMLRPCRequest::$sent === 1,
+			'passthrough_unsafe is documented as dangerous and stays literal');
+		$this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'and trusted');
+	}
+
+	public function testSystemMulticallMembersAreJudgedToo()
+	{
+		$this->resetMocks();
+		$xml = '<?xml version="1.0"?><methodCall><methodName>system.multicall</methodName>'
+			. '<params><param><value><array><data><value><struct>'
+			. '<member><name>methodName</name><value><string>execute.capture</string></value></member>'
+			. '<member><name>params</name><value><array><data>'
+			. '<value><string></string></value></data></array></value></member>'
+			. '</struct></value></data></array></value></param></params></methodCall>';
+		$this->assertTrue(XMLRPCProxy::process($xml, 'sanitize', true, array()) === null,
+			'a refused method does not get through inside a struct');
+		$this->assertTrue(rXMLRPCRequest::$sent === 0, 'and nothing is forwarded');
+	}
+
+	// ---- elevated: refused by rtorrent untrusted, needed by real clients ----
+
+	public function testOneDownloadByHashIsElevated()
+	{
+		foreach(array('d.open', 'd.start', 'd.stop', 'd.delete_tied') as $method)
+		{
+			$this->callMethod($method, array('0123456789abcdef0123456789ABCDEF01234567'));
+			$this->assertTrue(rXMLRPCRequest::$lastTrusted === true, $method . ' is elevated');
+			$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload,
+				'0123456789ABCDEF0123456789ABCDEF01234567') !== false,
+				$method . ' is re-emitted with the hash this side validated');
+		}
+	}
+
+	public function testAnArgumentThatIsNotAHashIsNotElevated()
+	{
+		foreach(array('not-a-hash', '', '0123456789abcdef0123456789ABCDEF0123456',
+			'0123456789abcdef0123456789ABCDEF012345678', '../../etc/passwd') as $bad)
+		{
+			$this->callMethod('d.start', array($bad));
+			$this->assertTrue(rXMLRPCRequest::$lastTrusted === false,
+				var_export($bad, true) . ' is not a hash, so the call is left untrusted');
+		}
+	}
+
+	public function testTheArgumentCountHasToMatch()
+	{
+		$this->callMethod('d.start', array('0123456789ABCDEF0123456789ABCDEF01234567', 'extra'));
+		$this->assertTrue(rXMLRPCRequest::$lastTrusted === false,
+			'an extra argument means the call is not the shape that was approved');
+	}
+
+	public function testAnElevatedValueIsCarriedAsDataNotAsACommand()
+	{
+		$this->callMethod('d.custom1.set',
+			array('0123456789ABCDEF0123456789ABCDEF01234567', '$execute.capture=/bin/hostname'));
+		$this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'the call is elevated');
+		$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload,
+			'<string>$execute.capture=/bin/hostname</string>') !== false,
+			'and the value travels as a string parameter, which rtorrent stores rather than parses');
+	}
+
+	public function testTheSizeLimitIsClamped()
+	{
+		$this->callMethod('network.xmlrpc.size_limit.set', array('', '999999999'));
+		$this->assertTrue(rXMLRPCRequest::$lastTrusted === true, 'the call is elevated');
+		$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload, '<i8>16777216</i8>') !== false,
+			'a client raising it to add a big torrent is fine; an unbounded value is not');
+		$this->callMethod('network.xmlrpc.size_limit.set', array('', '2097152'));
+		$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload, '<i8>2097152</i8>') !== false,
+			'a value under the ceiling is passed through as asked');
+	}
+
+	public function testElevationListHoldsNoCommandCarryingMethod()
+	{
+		$ref = new ReflectionProperty('XMLRPCProxy', 'elevate');
+		$ref->setAccessible(true);
+		$elevated = array_keys($ref->getValue());
+		foreach(array('load.start', 'load.raw_start', 'd.multicall2', 't.multicall') as $method)
+			$this->assertTrue(!in_array($method, $elevated),
+				$method . ' takes command strings, so it is rebuilt rather than elevated');
 	}
 
 	public function testSystemMulticallIsStillForwardedUntouched()
