@@ -52,6 +52,32 @@ $mode = isset($XMLRPCProxy) ? $XMLRPCProxy : 'sanitize';
 $logging = isset($XMLRPCProxyLog) ? $XMLRPCProxyLog : true;
 $safeParams = isset($XMLRPCProxySafeParams) ? $XMLRPCProxySafeParams : array();
 $allowLocalPaths = isset($XMLRPCProxyAllowLocalPaths) ? $XMLRPCProxyAllowLocalPaths : false;
+$allowRootDirectory = isset($XMLRPCProxyAllowRootDirectory) ? $XMLRPCProxyAllowRootDirectory : false;
+
+/**
+ * Resolve as much of a path as exists, so a symlink cannot be the difference
+ * between where a caller says a download goes and where it lands. The path
+ * usually does not exist yet, so realpath() alone answers nothing: walk up to
+ * the deepest ancestor that does exist, resolve that, and re-attach the rest.
+ */
+function rpc2_resolve_path($path)
+{
+	$real = @realpath($path);
+	if($real !== false)
+		return $real;
+
+	$parts = explode('/', trim($path, '/'));
+	$tail = array();
+	while(count($parts) > 0)
+	{
+		array_unshift($tail, array_pop($parts));
+		$base = '/'.implode('/', $parts);
+		$real = @realpath(($base === '') ? '/' : $base);
+		if($real !== false)
+			return rtrim($real, '/').'/'.implode('/', $tail);
+	}
+	return '';
+}
 
 /**
  * Written here rather than through FileUtil so that this file needs nothing
@@ -129,6 +155,23 @@ if(!isset($_SERVER['REQUEST_METHOD']) || ($_SERVER['REQUEST_METHOD'] !== 'POST')
 	exit;
 }
 
+// A caller may name the directory a download is written into, so the endpoint
+// has to know what is out of bounds before it answers anything. $topDirectory
+// is ruTorrent's own answer and correctDirectory() already holds the panel to
+// it; stock ruTorrent ships it as "/", which is not a boundary. Rather than
+// apply a check that confines nothing, refuse to serve until somebody has said
+// which it is.
+$topDirectory = isset($topDirectory) ? trim($topDirectory) : '';
+if((($topDirectory === '') || ($topDirectory === '/')) && !$allowRootDirectory)
+{
+	rpc2_log('refusing to serve: $topDirectory is "'.$topDirectory.'"'
+		.' and $XMLRPCProxyAllowRootDirectory is false');
+	rpc2_fault('503 Service Unavailable',
+		'This XMLRPC endpoint is not configured: set $topDirectory in conf/config.php '
+		.'to the directory downloads may be written under, or set '
+		.'$XMLRPCProxyAllowRootDirectory = true in conf/xmlrpc_proxy.php to allow any path.');
+}
+
 $raw = file_get_contents('php://input');
 if($raw === false || ($raw === ''))
 {
@@ -138,7 +181,12 @@ if($raw === false || ($raw === ''))
 	rpc2_fault('400 Bad Request', 'Empty XMLRPC request.');
 }
 
-$decision = XMLRPCProxy::decide($raw, $mode, $safeParams, $allowLocalPaths);
+$decision = XMLRPCProxy::decide($raw, $mode, $safeParams, $allowLocalPaths, array(
+	'directory' => array(
+		'root'    => ($topDirectory === '') ? '/' : $topDirectory,
+		'resolve' => 'rpc2_resolve_path',
+	),
+));
 foreach($decision['log'] as $line)
 	rpc2_log($line);
 

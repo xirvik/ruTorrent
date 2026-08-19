@@ -705,6 +705,132 @@ class XMLRPCProxyTest extends TestCase
 				$method . ' takes command strings, so it is rebuilt rather than elevated');
 	}
 
+	// ---- where a download may be written ----
+	//
+	// d.directory.set names the directory rtorrent writes a download into, and
+	// the caller supplies the torrent, so it names the file too. Unconfined and
+	// forwarded trusted, that is an arbitrary file write as the rtorrent user —
+	// found by a tester writing a .php into a webroot and running it.
+
+	private function loadInto($dir, $policy = null, $command = 'd.directory.set')
+	{
+		$this->resetMocks();
+		$xml = '<?xml version="1.0"?><methodCall><methodName>load.start</methodName><params>'
+			. '<param><value><string></string></value></param>'
+			. '<param><value><string>http://example.test/x.torrent</string></value></param>'
+			. '<param><value><string>' . $command . '=' . htmlspecialchars($dir, ENT_NOQUOTES)
+			. '</string></value></param>'
+			. '</params></methodCall>';
+		$options = ($policy === null) ? array() : array('directory' => $policy);
+		XMLRPCProxy::process($xml, 'sanitize', true,
+			array('d.directory.set', 'd.directory_base.set'), false, $options);
+		return strpos((string) rXMLRPCRequest::$lastPayload, $command . '=') !== false;
+	}
+
+	public function testADirectoryOutsideTheBoundaryIsDropped()
+	{
+		$policy = array('root' => '/torrents1/downloads');
+		$this->assertTrue(!$this->loadInto('/var/www/user1/rtorrent/share/settings/x/', $policy),
+			'the reported attack — a webroot path — does not reach rtorrent');
+		$this->assertTrue(rXMLRPCRequest::$sent === 1,
+			'and the torrent is still added, to the default directory');
+	}
+
+	public function testADirectoryInsideTheBoundaryIsKept()
+	{
+		$policy = array('root' => '/torrents1/downloads');
+		$this->assertTrue($this->loadInto('/torrents1/downloads/Movies', $policy),
+			'a directory the customer is entitled to still works');
+		$this->assertTrue($this->loadInto('/torrents1/downloads', $policy),
+			'the boundary itself is inside it');
+	}
+
+	public function testDirectoryBaseIsConfinedTheSameWay()
+	{
+		$policy = array('root' => '/torrents1/downloads');
+		$this->assertTrue(!$this->loadInto('/var/www/user1', $policy, 'd.directory_base.set'),
+			'd.directory_base.set sets the root directly, so it is the blunter of the two');
+		$this->assertTrue($this->loadInto('/torrents1/downloads/x', $policy, 'd.directory_base.set'),
+			'and still works inside the boundary');
+	}
+
+	public function testPathTricksDoNotEscape()
+	{
+		$policy = array('root' => '/torrents1/downloads');
+		foreach(array(
+			'/torrents1/downloads/../../var/www',   // climbing out
+			'/torrents1/downloads/./../../etc',     // with a . in the way
+			'/torrents1/downloadsEVIL',             // a prefix, not a child
+			'/torrents1/downloads/../downloads2',   // sibling
+			'downloads/x',                          // not absolute at all
+			'',                                     // nothing
+		) as $dir)
+		{
+			$this->assertTrue(!$this->loadInto($dir, $policy),
+				var_export($dir, true) . ' is not inside the boundary');
+		}
+	}
+
+	/**
+	 * The value normally does not exist yet, so realpath() on it answers
+	 * nothing and a lexical check is all that is left — which one symlink
+	 * inside the tree defeats, and the customer can create symlinks. The
+	 * resolver is asked about the deepest part that does exist.
+	 */
+	public function testASymlinkOutOfTheTreeIsCaught()
+	{
+		$policy = array(
+			'root' => '/torrents1/downloads',
+			'resolve' => function($path) {
+				// stands in for a symlink at /torrents1/downloads/escape
+				if(strpos($path, '/torrents1/downloads/escape') === 0)
+					return '/var/www/user1' . substr($path, strlen('/torrents1/downloads/escape'));
+				return $path;
+			},
+		);
+		$this->assertTrue(!$this->loadInto('/torrents1/downloads/escape/x', $policy),
+			'a path that is inside on paper and outside in fact is dropped');
+		$this->assertTrue($this->loadInto('/torrents1/downloads/real/x', $policy),
+			'and one that resolves where it says still works');
+	}
+
+	public function testAResolverThatCannotAnswerIsANo()
+	{
+		$policy = array(
+			'root' => '/torrents1/downloads',
+			'resolve' => function($path) { return ''; },
+		);
+		$this->assertTrue(!$this->loadInto('/torrents1/downloads/x', $policy),
+			'an open question about a write target is not a yes');
+	}
+
+	public function testNoBoundaryStatedMeansNoBoundaryChecked()
+	{
+		// Every caller behaved this way before the check existed, and the
+		// httprpc plugin still does — its door needs a ruTorrent session, not a
+		// machine credential. rpc2.php always states a boundary and refuses to
+		// start without one.
+		$this->assertTrue($this->loadInto('/anywhere/at/all', null),
+			'a caller that states no boundary is not policed here');
+	}
+
+	public function testAPolicyWithNoRootRefuses()
+	{
+		$this->assertTrue(!$this->loadInto('/torrents1/downloads/x', array()),
+			'a stated policy that names no root permits nothing, rather than everything');
+	}
+
+	public function testTheConfinedCommandsAreTheOnesThatWriteSomewhere()
+	{
+		$ref = new ReflectionProperty('XMLRPCProxy', 'directoryCommands');
+		$ref->setAccessible(true);
+		$commands = $ref->getValue();
+		$this->assertTrue(in_array('d.directory.set', $commands), 'd.directory.set is confined');
+		$this->assertTrue(in_array('d.directory_base.set', $commands), 'd.directory_base.set is confined');
+		$this->assertTrue(!in_array('d.custom1.set', $commands),
+			'a label is not a path and is not confined');
+	}
+
 	public function testSystemMulticallIsStillForwardedUntouched()
 	{
 		$this->resetMocks();

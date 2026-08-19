@@ -113,6 +113,20 @@ class XMLRPCProxy
 	// rtorrent buffer as much as it likes.
 	private static $sizeLimitMax = 16777216;
 
+	// Commands whose argument is a path rtorrent will write a download into.
+	// apply_d_directory() (command_download.cc:146) makes it the download's root
+	// directory: for a single-file torrent the data lands at <dir>/<info.name>,
+	// and the caller wrote the torrent, so it names the file too. Unconfined,
+	// that is an arbitrary file write as the user rtorrent runs as — which lands
+	// in a PHP-executing docroot if one is reachable and writable.
+	//
+	// ruTorrent already confines these everywhere else: correctDirectory() holds
+	// a directory inside $topDirectory for the panel, for addtorrent.php and for
+	// httprpc's own settings branch. This path skipped it.
+	private static $directoryCommands = array(
+		'd.directory.set', 'd.directory_base.set',
+	);
+
 	private static $multicallMethods = array(
 		'd.multicall', 'd.multicall2', 'd.multicall.filtered',
 		't.multicall', 'f.multicall', 'p.multicall',
@@ -227,6 +241,8 @@ class XMLRPCProxy
 			return self::reject("rejected (not allowed on this connection): ".
 				self::logValue($methodName));
 
+		$directory = isset($options['directory']) ? $options['directory'] : null;
+
 		if(in_array($methodName, self::$sanitizeMethods, true))
 		{
 			if(!$allowLocalPaths && in_array($methodName, self::$uriLoadMethods, true))
@@ -237,7 +253,7 @@ class XMLRPCProxy
 						$methodName." ".self::logValue($uri));
 			}
 
-			$rebuilt = self::rebuildLoadParams($xml, $methodName, $safeParams);
+			$rebuilt = self::rebuildLoadParams($xml, $methodName, $safeParams, $directory);
 
 			// Trusted only when every parameter was rebuilt from parts this
 			// side parsed. Anything carried over verbatim goes untrusted, so
@@ -260,7 +276,7 @@ class XMLRPCProxy
 
 		if(in_array($methodName, self::$multicallMethods, true))
 		{
-			$rebuilt = self::rebuildLoadParams($xml, $methodName, $safeParams);
+			$rebuilt = self::rebuildLoadParams($xml, $methodName, $safeParams, $directory);
 
 			if(count($rebuilt['stripped']) > 0)
 			{
@@ -458,6 +474,86 @@ class XMLRPCProxy
 		return null;
 	}
 
+	/**
+	 * May a download be written into this path?
+	 *
+	 * $directory is the policy: array('root' => <absolute path>, 'resolve' =>
+	 * <callable|null>). Without one, no — a caller naming a write target has to
+	 * be answered from a stated boundary, and "none was stated" is not a boundary.
+	 *
+	 * The value normally does not exist yet, so realpath() on it returns false
+	 * and cannot be the check. A lexical check alone is not enough either: one
+	 * symlink inside the tree, which the customer can create, points anywhere.
+	 * So the lexical check runs first and the resolver is then asked about the
+	 * deepest part that does exist.
+	 */
+	private static function directoryIsAllowed($path, $directory)
+	{
+		if(!is_array($directory) || !isset($directory['root']))
+			return false;
+		$root = self::normalisePath($directory['root']);
+		if(($root === null) || ($root === ''))
+			return false;
+
+		$path = self::normalisePath($path);
+		if($path === null)
+			return false;
+		if(!self::isInside($path, $root))
+			return false;
+
+		if(isset($directory['resolve']) && is_callable($directory['resolve']))
+		{
+			$real = call_user_func($directory['resolve'], $path);
+			$realRoot = call_user_func($directory['resolve'], $root);
+			// A resolver that cannot answer for either side leaves the question
+			// open, and an open question about a write target is a no.
+			if(!is_string($real) || !is_string($realRoot) || ($real === '') || ($realRoot === ''))
+				return false;
+			if(!self::isInside($real, $realRoot))
+				return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Collapse '.', '..' and repeated separators without touching the
+	 * filesystem. Returns null for anything that is not an absolute path,
+	 * including one that climbs above '/'.
+	 */
+	private static function normalisePath($path)
+	{
+		$path = trim((string)$path);
+		if(($path === '') || ($path[0] !== '/'))
+			return null;
+		$out = array();
+		foreach(explode('/', $path) as $part)
+		{
+			if(($part === '') || ($part === '.'))
+				continue;
+			if($part === '..')
+			{
+				if(count($out) === 0)
+					return null;
+				array_pop($out);
+				continue;
+			}
+			$out[] = $part;
+		}
+		return '/'.implode('/', $out);
+	}
+
+	/**
+	 * Is $path the root itself or something under it? Compared with the
+	 * separator attached, so /torrents1x is not inside /torrents1.
+	 */
+	private static function isInside($path, $root)
+	{
+		if($root === '/')
+			return true;
+		return ($path === $root) || (strpos($path, rtrim($root, '/').'/') === 0);
+	}
+
 	private static function forward($payload, $trusted, $line)
 	{
 		return array('action' => 'send', 'payload' => $payload,
@@ -487,7 +583,7 @@ class XMLRPCProxy
 	 * not a pre-quoted d.custom1.set="Movies, Inc", since the quoting is added
 	 * here and a quote in the value is escaped rather than interpreted.
 	 */
-	private static function rebuildSafeLoadParam($paramValue, $safeParams)
+	private static function rebuildSafeLoadParam($paramValue, $safeParams, $directory = null)
 	{
 		$separator = strpos($paramValue, '=');
 		if($separator === false)
@@ -495,6 +591,14 @@ class XMLRPCProxy
 
 		$command = trim(substr($paramValue, 0, $separator));
 		if(!in_array($command, $safeParams, true))
+			return null;
+
+		// A caller that states no boundary is not policed here, which is the
+		// behaviour every caller had before this existed. rpc2.php always states
+		// one and refuses to start without it; the httprpc plugin does not, and
+		// its door needs a ruTorrent session rather than a machine credential.
+		if(($directory !== null) && in_array($command, self::$directoryCommands, true) &&
+			!self::directoryIsAllowed(trim(substr($paramValue, $separator + 1)), $directory))
 			return null;
 
 		$arguments = array();
@@ -559,7 +663,7 @@ class XMLRPCProxy
 	 *               parameter had to be carried over verbatim, which means
 	 *               the call must not be sent as trusted.
 	 */
-	public static function rebuildLoadParams($xml, $methodName, $safeParams = array())
+	public static function rebuildLoadParams($xml, $methodName, $safeParams = array(), $directory = null)
 	{
 		$cleanXml = '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
 		$cleanXml .= '<methodCall><methodName>' . htmlspecialchars($methodName) . '</methodName>';
@@ -592,7 +696,7 @@ class XMLRPCProxy
 				else
 				{
 					$value = self::extractParamValue($param->value);
-					$rebuiltParam = self::rebuildSafeLoadParam($value, $safeParams);
+					$rebuiltParam = self::rebuildSafeLoadParam($value, $safeParams, $directory);
 					if($rebuiltParam !== null)
 					{
 						$cleanXml .= '<param><value><string>'

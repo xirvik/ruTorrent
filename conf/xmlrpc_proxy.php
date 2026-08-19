@@ -55,3 +55,20 @@
 	// removes. ruTorrent's own "add torrent" does not go through the proxy, so
 	// this does not affect it.
 	$XMLRPCProxyAllowLocalPaths = false;
+
+	// Allow "/" as the boundary for where a caller may have a download written
+	// (default: false).
+	//
+	// d.directory.set and d.directory_base.set name the directory rtorrent
+	// writes a download into, and the caller supplies the torrent, so they name
+	// the file too. They are confined to $topDirectory from conf/config.php,
+	// which is the same boundary correctDirectory() already holds the panel to.
+	//
+	// Stock ruTorrent ships $topDirectory = "/", which confines nothing. A check
+	// that is present but permits everything is worse than none, so with that
+	// setting this endpoint refuses to serve until somebody has decided which it
+	// is: either set $topDirectory to the directory downloads belong under, or
+	// set this to true and accept that a caller may write anywhere the rtorrent
+	// user can. On a single-user box where the only caller is you, that may be
+	// exactly what you want -- but say it on purpose.
+	$XMLRPCProxyAllowRootDirectory = false;
