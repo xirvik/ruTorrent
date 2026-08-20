@@ -81,6 +81,9 @@ class XMLRPCProxy
 		'directory.default.set',
 		'catch',                  // evaluates its argument
 		'system.env',
+		'system.shutdown',        // and .normal / .quick -- answered by the xmlrpc-c
+		                          // registry, not rtorrent's command map, so rtorrent's
+		                          // own untrusted gate never sees it
 	);
 
 	// Methods rtorrent refuses to an untrusted caller that a remote client
