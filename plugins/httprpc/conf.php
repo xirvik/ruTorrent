@@ -31,26 +31,8 @@ $XMLRPCProxyLog = true;
 // does not affect it.
 $XMLRPCProxyAllowLocalPaths = false;
 
-// Command names allowed as load.* parameters in sanitize mode.
-// External clients (Prowlarr, Sonarr, Radarr, Transdroid) attach these
-// to load.start to set labels, directories, priorities, etc.
-// Entries are full command names and are matched exactly: 'd.custom' does
-// NOT cover 'd.custom1.set'. A param whose command name is not listed is
-// stripped and logged. Add entries here if your external client needs
-// additional commands.
-$XMLRPCProxySafeParams = array(
-	'd.custom1.set',            // label
-	'd.custom2.set',            // custom field
-	'd.custom3.set',            // custom field
-	'd.custom4.set',            // custom field
-	'd.custom5.set',            // used by erasedata
-	'd.custom.set',             // generic custom field
-	'd.directory.set',          // download directory
-	'd.directory_base.set',     // base directory
-	'd.priority.set',           // priority
-	'd.throttle_name.set',      // throttle group
-	'd.views.push_back_unique', // view membership
-
-	// Actions (not setters):
-	'd.delete_tied',            // delete .torrent on remove
-);
+// The command names a caller may name as a load.* or multicall parameter are
+// $XMLRPCProxySafeParams in conf/xmlrpc_proxy.php, which action.php loads before
+// this file. One list serves every door that reaches the proxy, so a client that
+// works against one works against all of them. Set it here only when this door is
+// meant to differ from the rest.

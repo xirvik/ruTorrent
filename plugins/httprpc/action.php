@@ -685,6 +685,13 @@ switch($mode)
 	{
 		if(isset($HTTP_RAW_POST_DATA))
 		{
+			// The policy is shared with rpc2.php -- one statement of what a
+			// caller may name, for every door that reaches rtorrent through
+			// this filter. The plugin conf is evaluated after it, so an
+			// operator can still say that this door differs.
+			$policyFile = dirname(__FILE__).'/../../conf/xmlrpc_proxy.php';
+			if(is_file($policyFile) && is_readable($policyFile))
+				require_once($policyFile);
 			eval(FileUtil::getPluginConf('httprpc'));
 			$proxyMode = isset($XMLRPCProxy) ? $XMLRPCProxy : 'sanitize';
 			$proxyLog = isset($XMLRPCProxyLog) ? $XMLRPCProxyLog : true;
