@@ -83,8 +83,11 @@ plugin.handlePaste = function(event)
 	// *inside* a single magnet's tr= parameter
 	// (tr=http://t1,http://t2), so a comma before "http(s)://" is left
 	// alone to avoid shredding a normal link.
+	// A list copied whole often keeps the separator that ended it, and a
+	// link is not a link once a comma is stuck to it: the add would be
+	// posted with the comma and fail, for a link that was fine.
 	const urls = text.split(/\r\n|\n|\r|\s+|[,;]+\s*(?=magnet:)/i)
-		.map(item => item.trim())
+		.map(item => item.trim().replace(/[,;]+$/, ''))
 		.filter(item => item.length > 0);
 	if (!urls.length || !urls.every(item => (/^magnet:|^https?:\/\//i).test(item)))
 		return;
