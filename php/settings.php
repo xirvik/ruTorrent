@@ -17,6 +17,14 @@ class rTorrentSettings
 	public $version;
 	public $libVersion;
 	public $apiVersion = 0;
+	// rtorrent 0.16.21. system.sockets.available_alloc and the per-category
+	// limits do not exist before it, so the whole probe is gated on this.
+	const SOCKET_ALLOC_VERSION = 0x1015;
+
+	public $socketAllocBudget = 0;
+	public $socketHttpAllocMax = 0;
+	public $socketFilesAllocMax = 0;
+	public $socketFilesAllocMin = 0;
 	public $plugins = array();
 	public $hooks = array();
 	public $aliases = array();
@@ -246,6 +254,23 @@ class rTorrentSettings
 				if($req->success())
 					$this->apiVersion = $req->val[0];
 			}
+			// system.sockets.available_alloc is the total the configurable
+			// categories may share. internal and rpc are not exposed on the
+			// settings page, so what is left is what open files and HTTP
+			// connections have between them. Absent before rtorrent 0.16.21.
+			if(self::socketAllocSupported($this->iVersion))
+			{
+				$req = new rXMLRPCRequest( array(
+					new rXMLRPCCommand("system.sockets.available_alloc"),
+					new rXMLRPCCommand("system.sockets.internal.max_size"),
+					new rXMLRPCCommand("system.sockets.rpc.max_size"),
+					new rXMLRPCCommand("system.sockets.http.max_alloc.limit"),
+					new rXMLRPCCommand("system.sockets.files.max_alloc.limit"),
+					new rXMLRPCCommand("system.sockets.files.min_alloc.limit") ) );
+				$req->important = false;
+				if($req->success())
+					$this->applySocketAllocLimits($req->val);
+			}
 
 			$req = new rXMLRPCRequest(new rXMLRPCCommand(
 				"convert.kb",
@@ -353,6 +378,44 @@ class rTorrentSettings
 		$cmd->addParameters($args);
 		return($cmd);
 	}
+	/**
+	 * Whether the daemon reports its socket allocation limits at all.
+	 *
+	 * @param int|null $iVersion packed rtorrent version, or null when unknown
+	 */
+	public static function socketAllocSupported( $iVersion )
+	{
+		// null before the version has been read, and 0 is the sentinel
+		// php/getplugins.php emits while the daemon is unreachable. Both
+		// compare below the threshold, so neither is asked.
+		return($iVersion>=self::SOCKET_ALLOC_VERSION);
+	}
+
+	/**
+	 * Take the limits out of the answer to the six-command probe.
+	 *
+	 * The budget is what the two categories the settings page offers have
+	 * between them: the total, less the two categories it does not offer. A
+	 * daemon that answered with anything else leaves the defaults alone --
+	 * a zero budget is read as "unknown" by the settings page, and a wrong
+	 * one would be offered to the user as a limit to type against.
+	 *
+	 * @param array $val the six values, in the order they were asked for
+	 */
+	public function applySocketAllocLimits( $val )
+	{
+		if(!is_array($val) || (count($val)!=6))
+			return(false);
+		foreach($val as $v)
+			if(!is_numeric($v))
+				return(false);
+		$this->socketAllocBudget = max(0,$val[0]-$val[1]-$val[2]);
+		$this->socketHttpAllocMax = $val[3];
+		$this->socketFilesAllocMax = $val[4];
+		$this->socketFilesAllocMin = $val[5];
+		return(true);
+	}
+
 	public function getOnInsertCommand($args)
 	{
 		return($this->getEventCommand('on_insert','inserted_new',$args));
@@ -381,18 +444,30 @@ class rTorrentSettings
 		$startAt = $interval+rand(0,$schedule_rand);
 		return( new rXMLRPCCommand("schedule", array( $name.User::getUser(), $startAt."", $interval."", $cmd )) );
 	}
-	public function getScheduleCommand($name,$interval,$cmd,&$startAt = null)	// $interval in minutes
+	public function getScheduleCommand($name,$interval,$cmd,&$startAt = null,$now = null)	// $interval in minutes
 	{
-		global $schedule_rand;
-		if(!isset($schedule_rand))
-			$schedule_rand = 10;
-		$tm = getdate();
-		$startAt = mktime($tm["hours"],
-			((int)($tm["minutes"]/$interval))*$interval+$interval,
-			0,$tm["mon"],$tm["mday"],$tm["year"])-$tm[0]+rand(0,$schedule_rand);
-		if($startAt<0)
-			$startAt = 0;
+		// The start has to be deterministic, not jittered with rand().
+		// php/getplugins.php re-runs every enabled plugin's init.php on each
+		// full load of the web interface, and rTorrent's scheduler replaces an
+		// entry that reuses a key, restarting its countdown at now+start
+		// (CommandScheduler::insert). With a random offset a reload landing in
+		// the jitter window -- after the wall-clock boundary but before the
+		// task actually fired -- recomputed to the *next* boundary, so a user
+		// who kept refreshing cost the task a whole interval each time.
+		// getAlignedStart spreads the tasks over that same window by the crc32
+		// of their key instead, so every re-registration of one task resolves
+		// to the same absolute instant; it counts in seconds, hence the
+		// conversion first. It also never returns 0, so a reload cannot fire
+		// the task at once, and $startAt stays the seconds-until-fire that
+		// callers such as plugins/rss report as the next update time.
+		//
+		// $now is the same clock seam getAlignedStart already carries, and it
+		// is here for the same reason: what this function has to promise is
+		// that two registrations made at *different* instants resolve to the
+		// same fire time, and a caller that can only read the clock samples a
+		// single instant. Production callers pass nothing and get time().
 		$interval = $interval*60;
+		$startAt = self::getAlignedStart($name,$interval,$now);
 		return( new rXMLRPCCommand("schedule", array( $name.User::getUser(), $startAt."", $interval."", $cmd )) );
 	}
 	static public function getAlignedStart($name,$interval,$now = null)	// $interval in seconds

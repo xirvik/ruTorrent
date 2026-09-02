@@ -97,6 +97,7 @@ var theUILang =
  Loading			: "불러오는 중...",
  Torrent_file			: "토렌트 파일",
  Torrent_URL			: "토렌트 URL",
+ Torrent_URL_multiline		: "Torrent URLs (one per line)",
  Torrent_properties		: "토렌트 속성",
  Trackers			: "트래커",
  Bandwidth_sett			: "대역폭 설정",
@@ -157,6 +158,11 @@ var theUILang =
  Glob_max_memory		: "최대 메모리 사용량",
  Glob_max_files			: "최대 열 수 있는 파일 수",
  Glob_max_http			: "최대 열 수 있는 HTTP 연결 수",
+ Glob_alloc_budget		: "Open files and HTTP connections share a limit of",
+ Glob_alloc_exceeded		: "Open files and HTTP connections may not exceed",
+ Glob_alloc_http_max		: "Open HTTP connections may not exceed",
+ Glob_alloc_files_max		: "Open files may not exceed",
+ Glob_alloc_files_min		: "Open files may not be lower than",
  Open_label         : "열다",
  Other_sett			: "기타",
  Directory_For_Dl		: "다운로드 기본 디렉토리",
@@ -321,5 +327,6 @@ var theUILang =
  Torrents			: "Torrent(s)",
  copyToClipboardFailed		: "The copy function isn't working in your browser.\nPlease copy this content manually:\n\n",
  copyToClipboardSuccess		: "Copied to clipboard successfully!",
- normalizeTorrentName		: "Sort using normalized torrent name and recognize name label"
+ normalizeTorrentName		: "Sort using normalized torrent name and recognize name label",
+ Settings_save_indeterminate	: "Settings outcome is unknown. Save remains locked; reload manually only after rTorrent responds."
 };

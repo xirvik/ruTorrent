@@ -97,6 +97,7 @@ var theUILang =
  Loading			: "Учитавање...",
  Torrent_file			: "Торент датотека",
  Torrent_URL			: "Torrent URL",
+ Torrent_URL_multiline		: "Torrent URLs (one per line)",
  Torrent_properties		: "Својства торента",
  Trackers			: "Трекери",
  Bandwidth_sett			: "Bandwidth Settings",
@@ -157,6 +158,11 @@ var theUILang =
  Glob_max_memory		: "Максимална потрошња меморије",
  Glob_max_files			: "Максималан број отворених датотека",
  Glob_max_http			: "Максималан број отворених НТТР веза",
+ Glob_alloc_budget		: "Open files and HTTP connections share a limit of",
+ Glob_alloc_exceeded		: "Open files and HTTP connections may not exceed",
+ Glob_alloc_http_max		: "Open HTTP connections may not exceed",
+ Glob_alloc_files_max		: "Open files may not exceed",
+ Glob_alloc_files_min		: "Open files may not be lower than",
  Open_label         : "Отвори",
  Other_sett			: "Друго",
  Directory_For_Dl		: "Подразумевани директоријум за низтоваре",
@@ -321,5 +327,6 @@ var theUILang =
  Torrents			: "Torrent(s)",
  copyToClipboardFailed		: "The copy function isn't working in your browser.\nPlease copy this content manually:\n\n",
  copyToClipboardSuccess		: "Copied to clipboard successfully!",
- normalizeTorrentName		: "Sort using normalized torrent name and recognize name label"
+ normalizeTorrentName		: "Sort using normalized torrent name and recognize name label",
+ Settings_save_indeterminate	: "Settings outcome is unknown. Save remains locked; reload manually only after rTorrent responds."
 };

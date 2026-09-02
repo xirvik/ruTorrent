@@ -263,13 +263,26 @@ function getClickableTrackerStatus(text)
 {
 	if (!text) return '';
 	var sanitized = escapeHTML(text);
-	return sanitized.replace(/https?:\/\/[^\s<>"']+/gi, function(match) {
+	var linked = sanitized.replace(/https?:\/\/[^\s<>"']+/gi, function(match) {
 		var entityMatch = match.match(/&(?:quot|#039|#39|lt|gt);/i);
 		var truncated = entityMatch ? match.substring(0, entityMatch.index) : match;
 		var cleanUrl = truncated.replace(/[.,)!?:;\\\]}]+$/g, '');
 		var trailing = match.substring(cleanUrl.length);
 		return '<a href="' + cleanUrl + '" target="_blank" rel="noopener noreferrer">' + cleanUrl + '</a>' + trailing;
 	});
+	// A tracker hostname can resolve to both an A and an AAAA record, and
+	// libtorrent announces to one address family at a time. When the first
+	// family fails it stashes the reason, retries the same tracker over the
+	// other family, and if that fails too it reports both joined with ' /// '
+	// (TrackerHttp::receive_failed, src/tracker/tracker_http.cc) -- e.g.
+	// "Tracker: [Could not connect to server /// Could not resolve hostname]"
+	// is IPv4 and IPv6 answering differently about one tracker, not two
+	// trackers. There are only two families, so there are only ever two parts.
+	// Run together they read as a single garbled sentence, so each answer gets
+	// its own line. Done AFTER the linkification: a URL cannot contain a
+	// space, so this separator can never fall inside one of the links just
+	// built.
+	return linked.replace(/ \/\/\/ /g, '<br>');
 }
 
 
@@ -1628,6 +1641,25 @@ function strip_tags(input, allowed)
 	{
 		return allowed.indexOf('<' + $1.toLowerCase() + '>') > -1 ? $0 : '';
     	});
+}
+
+/**
+ * Whether rtorrent will accept an open files / HTTP connections pair.
+ *
+ * The socket manager hands the configurable categories a fixed budget and
+ * refuses the whole write when a recompute would exceed it, so the pair has to
+ * be checked together rather than field by field.
+ *
+ * @param {number} budget what the two fields may total, 0 when rtorrent does not report it
+ * @param {number} files requested maximum number of open files
+ * @param {number} http requested maximum number of open HTTP connections
+ * @returns {boolean} true when the pair fits, or when there is no budget to check against
+ */
+function socketAllocationFits(budget, files, http)
+{
+	if(!iv(budget))
+		return true;
+	return((iv(files) + iv(http)) <= iv(budget));
 }
 
 if (!window.requestIdleCallback) {

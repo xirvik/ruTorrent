@@ -100,6 +100,7 @@ var theUILang =
  Loading			: "Apertura...",
  Torrent_file			: "File Torrent",
  Torrent_URL			: "URL Torrent",
+ Torrent_URL_multiline		: "Torrent URLs (one per line)",
  Torrent_properties		: "Proprietà Torrent",
  Trackers			: "Tracker",
  Bandwidth_sett			: "Impostazioni di banda",
@@ -160,6 +161,11 @@ var theUILang =
  Glob_max_memory		: "Memoria massima usata",
  Glob_max_files			: "Massimo numero di file aperti",
  Glob_max_http			: "Massimo numero di connessioni http aperte",
+ Glob_alloc_budget		: "Open files and HTTP connections share a limit of",
+ Glob_alloc_exceeded		: "Open files and HTTP connections may not exceed",
+ Glob_alloc_http_max		: "Open HTTP connections may not exceed",
+ Glob_alloc_files_max		: "Open files may not exceed",
+ Glob_alloc_files_min		: "Open files may not be lower than",
  Open_label         : "Aperto",
  Other_sett			: "Altro",
  Directory_For_Dl		: "Cartella di default per i download",
@@ -324,5 +330,6 @@ var theUILang =
  Torrents			: "Torrent",
  copyToClipboardFailed		: "La funzione copia non funziona nel tuo browser.\nCopia il contenuto manualmente:\n\n",
  copyToClipboardSuccess		: "Copiato con successo negli appunti!",
- normalizeTorrentName		: "Sort using normalized torrent name and recognize name label"
+ normalizeTorrentName		: "Sort using normalized torrent name and recognize name label",
+ Settings_save_indeterminate	: "Settings outcome is unknown. Save remains locked; reload manually only after rTorrent responds."
 };

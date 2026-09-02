@@ -97,6 +97,7 @@ var theUILang =
  Loading			: "載入中...",
  Torrent_file			: "Torrent 檔案",
  Torrent_URL			: "Torrent 網址",
+ Torrent_URL_multiline		: "Torrent URLs (one per line)",
  Torrent_properties		: "Torrent 屬性",
  Trackers			: "Tracker",
  Bandwidth_sett			: "頻寬設定",
@@ -157,6 +158,11 @@ var theUILang =
  Glob_max_memory		: "整體最大記憶體可用量",
  Glob_max_files			: "整體最大可開啟的檔案數量",
  Glob_max_http			: "整體最大 HTTP 連線數量",
+ Glob_alloc_budget		: "Open files and HTTP connections share a limit of",
+ Glob_alloc_exceeded		: "Open files and HTTP connections may not exceed",
+ Glob_alloc_http_max		: "Open HTTP connections may not exceed",
+ Glob_alloc_files_max		: "Open files may not exceed",
+ Glob_alloc_files_min		: "Open files may not be lower than",
  Open_label         : "打開",
  Other_sett			: "其他設定",
  Directory_For_Dl		: "預設下載目錄",
@@ -321,5 +327,6 @@ var theUILang =
  Torrents			: "Torrent(s)",
  copyToClipboardFailed		: "The copy function isn't working in your browser.\nPlease copy this content manually:\n\n",
  copyToClipboardSuccess		: "Copied to clipboard successfully!",
- normalizeTorrentName		: "Sort using normalized torrent name and recognize name label"
+ normalizeTorrentName		: "Sort using normalized torrent name and recognize name label",
+ Settings_save_indeterminate	: "Settings outcome is unknown. Save remains locked; reload manually only after rTorrent responds."
 };

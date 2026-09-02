@@ -99,6 +99,7 @@ var theUILang =
  Loading			: "Триває завантаження...",
  Torrent_file			: "Файл торента",
  Torrent_URL			: "URL торента",
+ Torrent_URL_multiline		: "Torrent URLs (one per line)",
  Torrent_properties		: "Властивості торента",
  Trackers			: "Трекери",
  Bandwidth_sett			: "Настройки обмежень",
@@ -159,6 +160,11 @@ var theUILang =
  Glob_max_memory		: "Макс. об’єм використовуваної пам’яті",
  Glob_max_files			: "Макс. кількість відкритих файлів",
  Glob_max_http			: "Макс. кількість відкритих з’єднань HTTP",
+ Glob_alloc_budget		: "Open files and HTTP connections share a limit of",
+ Glob_alloc_exceeded		: "Open files and HTTP connections may not exceed",
+ Glob_alloc_http_max		: "Open HTTP connections may not exceed",
+ Glob_alloc_files_max		: "Open files may not exceed",
+ Glob_alloc_files_min		: "Open files may not be lower than",
  Open_label         : "відчинено",
  Other_sett			: "Інше",
  Directory_For_Dl		: "Каталог завантажень",
@@ -323,5 +329,6 @@ var theUILang =
  Torrents			: "Torrent(s)",
  copyToClipboardFailed		: "The copy function isn't working in your browser.\nPlease copy this content manually:\n\n",
  copyToClipboardSuccess		: "Copied to clipboard successfully!",
- normalizeTorrentName		: "Sort using normalized torrent name and recognize name label"
+ normalizeTorrentName		: "Sort using normalized torrent name and recognize name label",
+ Settings_save_indeterminate	: "Результат збереження невідомий. Збереження заблоковано; перезавантажте сторінку вручну лише після відновлення відповіді rTorrent."
 };

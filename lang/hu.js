@@ -99,6 +99,7 @@ var theUILang =
  Loading			: "Betöltés...",
  Torrent_file			: "Torrent fájl",
  Torrent_URL			: "Torrent URL",
+ Torrent_URL_multiline		: "Torrent URLs (one per line)",
  Torrent_properties		: "Torrent tulajdonságok",
  Trackers			: "Trackerek",
  Bandwidth_sett			: "Sávszélesség beállítás",
@@ -159,6 +160,11 @@ var theUILang =
  Glob_max_memory		: "Maximum memória használat",
  Glob_max_files			: "Maximum nyitott fájlok száma",
  Glob_max_http			: "Maximum nyitott http kapcsolatok száma",
+ Glob_alloc_budget		: "Open files and HTTP connections share a limit of",
+ Glob_alloc_exceeded		: "Open files and HTTP connections may not exceed",
+ Glob_alloc_http_max		: "Open HTTP connections may not exceed",
+ Glob_alloc_files_max		: "Open files may not exceed",
+ Glob_alloc_files_min		: "Open files may not be lower than",
  Open_label         : "Nyisd ki",
  Other_sett			: "Egyéb",
  Directory_For_Dl		: "Alap letöltési mappa",
@@ -323,5 +329,6 @@ var theUILang =
  Torrents			: "Torrent(ek)",
  copyToClipboardFailed		: "A másolás funkció nem működik a böngésződben.\nKérlek, másold le ezt a tartalmat kézzel:\n\n",
  copyToClipboardSuccess		: "Sikeresen átmásoltam a vágólapra!",
- normalizeTorrentName		: "Sort using normalized torrent name and recognize name label"
+ normalizeTorrentName		: "Sort using normalized torrent name and recognize name label",
+ Settings_save_indeterminate	: "Settings outcome is unknown. Save remains locked; reload manually only after rTorrent responds."
 };

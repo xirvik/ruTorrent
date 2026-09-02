@@ -160,6 +160,11 @@ var theUILang =
  Glob_max_memory		: "Maximum memory usage",
  Glob_max_files			: "Maximum number of open files",
  Glob_max_http			: "Maximum number of open HTTP connections",
+ Glob_alloc_budget		: "Open files and HTTP connections share a limit of",
+ Glob_alloc_exceeded		: "Open files and HTTP connections may not exceed",
+ Glob_alloc_http_max		: "Open HTTP connections may not exceed",
+ Glob_alloc_files_max		: "Open files may not exceed",
+ Glob_alloc_files_min		: "Open files may not be lower than",
  Open_label         : "Open",
  Other_sett			: "Other",
  Directory_For_Dl		: "Default directory for downloads",
@@ -324,5 +329,6 @@ var theUILang =
  Torrents			: "Torrent(s)",
  copyToClipboardFailed		: "The copy function isn't working in your browser.\nPlease copy this content manually:\n\n",
  copyToClipboardSuccess		: "Copied to clipboard successfully!",
- normalizeTorrentName		: "Sort using the normalized torrent name and recognize the name label"
+ normalizeTorrentName		: "Sort using the normalized torrent name and recognize the name label",
+ Settings_save_indeterminate	: "Settings outcome is unknown. Save remains locked; reload manually only after rTorrent responds."
 };
