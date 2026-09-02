@@ -31,8 +31,11 @@ $XMLRPCProxyLog = true;
 // does not affect it.
 $XMLRPCProxyAllowLocalPaths = false;
 
-// The command names a caller may name as a load.* or multicall parameter are
-// $XMLRPCProxySafeParams in conf/xmlrpc_proxy.php, which action.php loads before
-// this file. One list serves every door that reaches the proxy, so a client that
-// works against one works against all of them. Set it here only when this door is
-// meant to differ from the rest.
+// The command names a caller may attach to a load.* or to a multicall are
+// $XMLRPCProxySafeParams in conf/xmlrpc_proxy.php, which action.php loads
+// before this file. One list serves every entry point that fronts rtorrent,
+// so a client that works through one works through all of them.
+//
+// Setting the list here is still honoured, and still wins, because this file
+// is evaluated after that one -- but it then applies to this entry point
+// alone. Set it here only when this one is meant to differ.
