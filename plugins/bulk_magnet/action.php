@@ -57,6 +57,19 @@ function parseValue( $value )
 	return($ret);
 }
 
+// The hashes rtorrent has loaded. rtorrent answers a load for a hash it
+// already has without a fault and drops the new copy, so the answer to
+// the load alone cannot tell an addition from a duplicate.
+function loadedHashes()
+{
+	$hashes = array();
+	$req = new rXMLRPCRequest( new rXMLRPCCommand("download_list") );
+	if($req->success())
+		foreach($req->val as $hash)
+			$hashes[strtoupper($hash)] = true;
+	return($hashes);
+}
+
 ignore_user_abort( true );
 set_time_limit( 0 );
 
@@ -64,6 +77,7 @@ $result = array
 (
 	'error' => 0,
 	'success' => 0,
+	'duplicate' => 0,
 );
 
 if(!isset($HTTP_RAW_POST_DATA))
@@ -72,6 +86,7 @@ if(isset($HTTP_RAW_POST_DATA))
 {
 	$vars = explode('&', $HTTP_RAW_POST_DATA);
 	$torrents = array();
+	$loaded = loadedHashes();
 	foreach($vars as $var)
 	{
 		$parts = explode("=",$var);
@@ -80,13 +95,19 @@ if(isset($HTTP_RAW_POST_DATA))
 			$value = trim(rawurldecode($parts[1]));
 			if(strlen($value))
 			{
-				if( parseValue( $value ) )
+				$hash = parseValue( $value );
+				if( $hash === false )
 				{
-					$result['success'] = $result['success'] + 1;
+					$result['error'] = $result['error'] + 1;
+				}
+				else if( isset( $loaded[strtoupper($hash)] ) )
+				{
+					$result['duplicate'] = $result['duplicate'] + 1;
 				}
 				else
 				{
-					$result['error'] = $result['error'] + 1;
+					$loaded[strtoupper($hash)] = true;
+					$result['success'] = $result['success'] + 1;
 				}
 			}
 		}
