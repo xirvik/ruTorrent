@@ -472,13 +472,18 @@ class XMLRPCProxyTest extends TestCase
 			'and it certainly is not trusted');
 	}
 
-	public function testMulticallDollarArgumentIsNeverTrusted()
+	public function testMulticallDollarArgumentIsRefused()
 	{
+		// '$' makes rtorrent call the name after it rather than store it, so
+		// the argument of an allowed command is a command of its own. It was
+		// forwarded untrusted, which is a refusal only from 0.16.10, because
+		// the name read off the parameter was d.custom1.set and nothing looked
+		// past the first '='.
 		$this->multicall(array('', 'main', 'd.custom1.set=$execute.capture=/bin/hostname'));
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === false,
-			'an allowed command whose argument would be re-parsed is not trusted');
-		$this->assertTrue(strpos((string) rXMLRPCRequest::$lastPayload, 'execute.capture') !== false,
-			'the original is forwarded rather than a rebuilt one, so nothing is smuggled in quoted');
+		$this->assertTrue(rXMLRPCRequest::$sent === 0,
+			'an allowed command whose argument would be re-parsed is refused, not forwarded');
+		$this->assertTrue(rXMLRPCRequest::$lastTrusted === null,
+			'and it certainly is not trusted');
 	}
 
 	public function testMulticallViewNameIsDataNotACommand()
@@ -687,22 +692,30 @@ class XMLRPCProxyTest extends TestCase
 		}
 	}
 
-	public function testAnArgumentThatIsNotAHashIsNotElevated()
+	/**
+	 * The shape is what elevation is granted against, and it is applied by
+	 * re-emitting the call from it. A call that does not match has had nothing
+	 * applied to it, so there is no forwarding it: on a daemon that reads
+	 * UNTRUSTED_CONNECTION and ignores it, forwarding is running.
+	 */
+	public function testAnArgumentThatIsNotAHashIsRefused()
 	{
 		foreach(array('not-a-hash', '', '0123456789abcdef0123456789ABCDEF0123456',
 			'0123456789abcdef0123456789ABCDEF012345678', '../../etc/passwd') as $bad)
 		{
-			$this->callMethod('d.start', array($bad));
-			$this->assertTrue(rXMLRPCRequest::$lastTrusted === false,
-				var_export($bad, true) . ' is not a hash, so the call is left untrusted');
+			$this->assertTrue($this->callMethod('d.start', array($bad)) === null,
+				var_export($bad, true) . ' is not a hash, so the call is refused');
+			$this->assertTrue(rXMLRPCRequest::$sent === 0,
+				var_export($bad, true) . ' never reaches rtorrent');
 		}
 	}
 
 	public function testTheArgumentCountHasToMatch()
 	{
-		$this->callMethod('d.start', array('0123456789ABCDEF0123456789ABCDEF01234567', 'extra'));
-		$this->assertTrue(rXMLRPCRequest::$lastTrusted === false,
+		$this->assertTrue($this->callMethod('d.start',
+			array('0123456789ABCDEF0123456789ABCDEF01234567', 'extra')) === null,
 			'an extra argument means the call is not the shape that was approved');
+		$this->assertTrue(rXMLRPCRequest::$sent === 0, 'and it never reaches rtorrent');
 	}
 
 	public function testAnElevatedValueIsCarriedAsDataNotAsACommand()

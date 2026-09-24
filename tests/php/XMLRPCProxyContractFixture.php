@@ -505,7 +505,7 @@ return array(
 			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2 carrying execute.capture",
 		),
 	),
-	"an allowed command with a \$ argument makes the multicall untrusted" => array(
+	"an allowed command with a \$ argument is refused, not forwarded" => array(
 		"request" => "<?xml version=\"1.0\"?><methodCall><methodName>d.multicall2</methodName><params><param><value><string></string></value></param><param><value><string>main</string></value></param><param><value><string>d.custom1.set=\$execute.capture=/bin/hostname</string></value></param></params></methodCall>",
 		"mode" => "sanitize",
 		"enableLog" => true,
@@ -515,12 +515,12 @@ return array(
 			"d.directory.set",
 		),
 		"allowLocalPaths" => false,
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>d.multicall2</methodName><params><param><value><string></string></value></param><param><value><string>main</string></value></param><param><value><string>d.custom1.set=\$execute.capture=/bin/hostname</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted: d.multicall2 (1 command parameters this side does not rebuild)",
+			"xmlrpc-proxy: rejected (not allowed on this connection): d.multicall2 carrying execute.capture",
 		),
 	),
 	"a chained command stays inside the argument it was quoted into" => array(
@@ -1199,15 +1199,15 @@ return array(
 			"d.directory.set",
 		),
 		"allowLocalPaths" => false,
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>d.start</methodName><params><param><value><string>not-a-hash</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted: d.start (arguments did not match the allowed shape)",
+			"xmlrpc-proxy: rejected (arguments did not match the allowed shape): d.start",
 		),
 	),
-	"an elevated method with the wrong argument count is not elevated" => array(
+	"an elevated method with the wrong argument count is refused" => array(
 		"request" => "<?xml version=\"1.0\"?><methodCall><methodName>d.start</methodName><params><param><value><string>0123456789ABCDEF0123456789ABCDEF01234567</string></value></param><param><value><string>extra</string></value></param></params></methodCall>",
 		"mode" => "sanitize",
 		"enableLog" => true,
@@ -1217,12 +1217,12 @@ return array(
 			"d.directory.set",
 		),
 		"allowLocalPaths" => false,
-		"returned" => "SCGI-REPLY",
-		"sends" => 1,
-		"trusted" => false,
-		"payload" => "<?xml version=\"1.0\"?><methodCall><methodName>d.start</methodName><params><param><value><string>0123456789ABCDEF0123456789ABCDEF01234567</string></value></param><param><value><string>extra</string></value></param></params></methodCall>",
+		"returned" => null,
+		"sends" => 0,
+		"trusted" => null,
+		"payload" => null,
 		"log" => array(
-			"xmlrpc-proxy: untrusted: d.start (arguments did not match the allowed shape)",
+			"xmlrpc-proxy: rejected (arguments did not match the allowed shape): d.start",
 		),
 	),
 	"the xmlrpc size limit is elevated but clamped" => array(

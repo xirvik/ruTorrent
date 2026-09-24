@@ -62,6 +62,9 @@ else
 	printf '%b\r\n' "${SNOOPY_TEST_RESPONSE:-HTTP/1.1 200 OK\r\n}" > "$header_file"
 fi
 : > "$body_file"
+if [ -n "$SNOOPY_TEST_EXIT" ]; then
+	exit "$SNOOPY_TEST_EXIT"
+fi
 SH;
 file_put_contents($curlPath, $script);
 chmod($curlPath, 0700);
@@ -85,6 +88,60 @@ class SnoopyResolvesToPublic extends Snoopy
             return parent::resolveHost($host);
         }
         return array('93.184.216.34');
+    }
+}
+
+// Stands in for the connection on the plain-HTTP path, which writes its own
+// request head to a socket instead of handing arguments to curl. Every
+// connect() returns one end of a fresh socket pair whose far end already holds
+// the next canned response with its write side shut down, so Snoopy reads a
+// complete answer; what Snoopy wrote is read back from the far end afterwards.
+class SnoopyOverSocketPair extends Snoopy
+{
+    public $requests = array();
+    private $responses = array();
+    private $farEnds = array();
+
+    public function __construct($responses)
+    {
+        parent::__construct();
+        $this->responses = $responses;
+    }
+
+    function connect()
+    {
+        $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
+        if (!is_array($pair)) {
+            return false;
+        }
+        list($near, $far) = $pair;
+        $response = array_shift($this->responses);
+        fwrite($far, is_null($response) ? "HTTP/1.1 200 OK\r\n\r\n" : $response);
+        stream_socket_shutdown($far, STREAM_SHUT_WR);
+        $this->farEnds[] = $far;
+        return $near;
+    }
+
+    // fetch() closes the near end itself; the request bytes stay readable from
+    // the far end until it is closed here.
+    public function closeSockets()
+    {
+        foreach ($this->farEnds as $far) {
+            stream_set_blocking($far, false);
+            $this->requests[] = (string) stream_get_contents($far);
+            fclose($far);
+        }
+        $this->farEnds = array();
+    }
+}
+
+// Asks the origin rule directly, which is cheaper than arranging a redirect
+// for each pair and says which pair failed.
+class SnoopyOriginProbe extends Snoopy
+{
+    public function leavesOrigin($url, $redirect)
+    {
+        return $this->redirectLeavesOrigin(parse_url($url), $redirect);
     }
 }
 
@@ -282,6 +339,367 @@ $tests = array(
             $client->_redirectaddr,
             'The redirect must be followed to the host it names'
         );
+    },
+    // A redirect names a host of its own choosing. What travelled with the
+    // request was collected for the host that was asked -- basic credentials
+    // from the url, the cookie jar fetchComplex loaded for that host, an
+    // Authorization header a caller set -- so a redirect elsewhere must not
+    // carry any of it.
+    'a cross-host redirect drops the credentials' => function () use ($seenPath) {
+        @unlink($seenPath);
+        putenv('SNOOPY_TEST_REDIRECT=https://collector.test/landing');
+        try {
+            $client = new Snoopy();
+            $client->cookies['session'] = 'secret-session';
+            $client->rawheaders['Authorization'] = 'Bearer secret-token';
+            snoopyAssertTrue(
+                $client->fetch('https://user:pass@tracker.test/feed'),
+                'Redirected HTTPS request did not complete'
+            );
+            $args = snoopyCurlArgs();
+            snoopyAssertSame(
+                'https://collector.test/landing',
+                end($args),
+                'The redirect must be followed to the host it names'
+            );
+            snoopyAssertSame(
+                array(),
+                array_values(array_filter($args, function ($arg) {
+                    return stripos($arg, 'Authorization:') === 0
+                        || stripos($arg, 'Cookie:') === 0;
+                })),
+                'Credentials were sent to the redirect target'
+            );
+            snoopyAssertSame('', $client->user, 'Basic user survived a cross-host redirect');
+            snoopyAssertSame('', $client->pass, 'Basic password survived a cross-host redirect');
+        } finally {
+            putenv('SNOOPY_TEST_REDIRECT');
+            @unlink($seenPath);
+        }
+    },
+    'a redirect within the same host keeps the credentials' => function () use ($seenPath) {
+        @unlink($seenPath);
+        putenv('SNOOPY_TEST_REDIRECT=https://tracker.test/elsewhere');
+        try {
+            $client = new Snoopy();
+            $client->cookies['session'] = 'secret-session';
+            $client->rawheaders['Authorization'] = 'Bearer secret-token';
+            snoopyAssertTrue(
+                $client->fetch('https://user:pass@tracker.test/feed'),
+                'Redirected HTTPS request did not complete'
+            );
+            $args = snoopyCurlArgs();
+            snoopyAssertTrue(
+                in_array('Authorization: Bearer secret-token', $args, true),
+                'A caller header must survive a redirect on the same host'
+            );
+            snoopyAssertTrue(
+                in_array('Cookie: session=secret-session', $args, true),
+                'The cookie jar must survive a redirect on the same host'
+            );
+        } finally {
+            putenv('SNOOPY_TEST_REDIRECT');
+            @unlink($seenPath);
+        }
+    },
+    // What the credentials were collected for is an origin -- scheme, host and
+    // port together -- not a name. Each pair below is (requested, redirect,
+    // whether that leaves the origin).
+    'the origin rule reads the scheme, the host and the port' => function () {
+        $probe = new SnoopyOriginProbe();
+        $pairs = array(
+            // The same origin, however it is spelled.
+            array('https://tracker.test/feed', 'https://tracker.test/elsewhere', false),
+            array('https://tracker.test/feed', 'https://TRACKER.test/elsewhere', false),
+            array('https://tracker.test/feed', 'https://tracker.test:443/x', false),
+            array('http://tracker.test:8080/feed', 'http://tracker.test:8080/x', false),
+            array('https://tracker.test/feed', '/relative/path', false),
+            // A different port is a different service, even on the same name.
+            array('https://tracker.test/feed', 'https://tracker.test:8443/x', true),
+            array('http://tracker.test/feed', 'http://tracker.test:8080/x', true),
+            array('http://tracker.test:8080/feed', 'http://tracker.test/x', true),
+            array('http://tracker.test:8080/feed', 'http://tracker.test:9090/x', true),
+            // A different host, with and without a port to argue about.
+            array('https://tracker.test/feed', 'https://collector.test/landing', true),
+            array('https://tracker.test:8443/feed', 'https://collector.test:8443/x', true),
+            // Off tls, which is where the credential would go out in clear.
+            array('https://tracker.test/feed', 'http://tracker.test/feed', true),
+            array('https://tracker.test:8443/feed', 'http://tracker.test:8443/x', true),
+            // The one move that keeps them, and only in that plain form.
+            array('http://tracker.test/feed', 'https://tracker.test/feed', false),
+            array('http://tracker.test:8080/feed', 'https://tracker.test:8080/x', true),
+        );
+        foreach ($pairs as $pair) {
+            list($url, $redirect, $expected) = $pair;
+            snoopyAssertSame(
+                $expected,
+                $probe->leavesOrigin($url, $redirect),
+                $url . ' -> ' . $redirect
+            );
+        }
+    },
+    // And on the wire, over the socket path, so the drop is read off the bytes
+    // rather than off the predicate.
+    'a redirect to another port on the same host drops the credentials' => function () {
+        $client = new SnoopyOverSocketPair(array(
+            "HTTP/1.1 302 Found\r\nLocation: http://tracker.test:8080/landing\r\n\r\n",
+            "HTTP/1.1 200 OK\r\n\r\n",
+        ));
+        $client->cookies['session'] = 'secret-session';
+        $client->rawheaders['Authorization'] = 'Bearer secret-token';
+        $client->fetch('http://user:pass@tracker.test/feed');
+        $client->closeSockets();
+
+        snoopyAssertSame(2, count($client->requests), 'The redirect was not followed');
+        snoopyAssertTrue(
+            stripos($client->requests[0], "\r\nAuthorization:") !== false,
+            'The first request should have carried the credentials'
+        );
+        snoopyAssertTrue(
+            stripos($client->requests[1], "\r\nAuthorization:") === false,
+            'An Authorization header was written to the other port'
+        );
+        snoopyAssertTrue(
+            strpos($client->requests[1], 'secret-session') === false,
+            'The cookie jar reached the other port'
+        );
+    },
+    'a redirect staying on one port keeps the credentials' => function () {
+        $client = new SnoopyOverSocketPair(array(
+            "HTTP/1.1 302 Found\r\nLocation: http://tracker.test:8080/landing\r\n\r\n",
+            "HTTP/1.1 200 OK\r\n\r\n",
+        ));
+        $client->cookies['session'] = 'secret-session';
+        $client->rawheaders['Authorization'] = 'Bearer secret-token';
+        $client->fetch('http://user:pass@tracker.test:8080/feed');
+        $client->closeSockets();
+
+        snoopyAssertSame(2, count($client->requests), 'The redirect was not followed');
+        snoopyAssertTrue(
+            stripos($client->requests[1], "\r\nAuthorization:") !== false,
+            'A caller header must survive a redirect within one origin'
+        );
+        snoopyAssertTrue(
+            strpos($client->requests[1], 'secret-session') !== false,
+            'The cookie jar must survive a redirect within one origin'
+        );
+    },
+    // Same host, but the redirect moves off tls. The second leg leaves the
+    // curl path for the socket path, which the socket pair stands in for, so
+    // nothing here opens a connection.
+    'a redirect down to plain http drops the credentials' => function () use ($seenPath) {
+        @unlink($seenPath);
+        putenv('SNOOPY_TEST_REDIRECT=http://tracker.test/feed');
+        try {
+            $client = new SnoopyOverSocketPair(array("HTTP/1.1 200 OK\r\n\r\n"));
+            $client->cookies['session'] = 'secret-session';
+            $client->rawheaders['Authorization'] = 'Bearer secret-token';
+            $client->fetch('https://tracker.test/feed');
+            $client->closeSockets();
+            snoopyAssertSame(1, count($client->requests), 'The redirect was not followed');
+            snoopyAssertTrue(
+                stripos($client->requests[0], "\r\nAuthorization:") === false,
+                'An Authorization header went out over plain http'
+            );
+            snoopyAssertTrue(
+                strpos($client->requests[0], 'secret-session') === false,
+                'The cookie jar went out over plain http'
+            );
+        } finally {
+            putenv('SNOOPY_TEST_REDIRECT');
+            @unlink($seenPath);
+        }
+    },
+    // The plain-HTTP path builds its own request head rather than handing
+    // arguments to curl, so it is checked on the bytes it writes. connect() is
+    // replaced by a socket pair per request: the far end already holds the
+    // response with its write side shut, and what Snoopy wrote is read back
+    // from it afterwards.
+    'a cross-host redirect drops the credentials over plain http' => function () {
+        $client = new SnoopyOverSocketPair(array(
+            "HTTP/1.1 302 Found\r\nLocation: http://collector.test/landing\r\n\r\n",
+            "HTTP/1.1 200 OK\r\n\r\n",
+        ));
+        $client->cookies['session'] = 'secret-session';
+        $client->rawheaders['Authorization'] = 'Bearer secret-token';
+        $client->fetch('http://user:pass@tracker.test/feed');
+        $client->closeSockets();
+
+        snoopyAssertSame(2, count($client->requests), 'The redirect was not followed');
+        snoopyAssertTrue(
+            stripos($client->requests[0], "\r\nAuthorization:") !== false,
+            'The first request should have carried the credentials'
+        );
+        snoopyAssertTrue(
+            stripos($client->requests[1], "\r\nAuthorization:") === false,
+            'An Authorization header was written to the redirect target'
+        );
+        snoopyAssertTrue(
+            stripos($client->requests[1], "\r\nCookie:") === false,
+            'A Cookie header was written to the redirect target'
+        );
+        snoopyAssertTrue(
+            strpos($client->requests[1], 'secret-session') === false,
+            'The cookie jar reached the redirect target'
+        );
+    },
+    // curl -k turns off certificate checking. It used to be appended to every
+    // HTTPS fetch with no way to stop it, which made every feed, torrent
+    // download and tracker login readable and changeable by anything on the
+    // path.
+    'HTTPS fetches check the certificate by default' => function () {
+        $client = new Snoopy();
+        snoopyAssertTrue($client->fetch('https://tracker.test/feed'), 'HTTPS request did not complete');
+        snoopyAssertSame(
+            false,
+            array_search('-k', snoopyCurlArgs(), true),
+            'Certificate checking was turned off without being asked'
+        );
+    },
+    'turning the check off puts -k back' => function () {
+        $client = new Snoopy();
+        $client->verify_certificates = false;
+        snoopyAssertTrue($client->fetch('https://tracker.test/feed'), 'HTTPS request did not complete');
+        snoopyAssertTrue(
+            array_search('-k', snoopyCurlArgs(), true) !== false,
+            'An install that opts out must still reach a self-signed host'
+        );
+    },
+    'the certificate check is configured from conf/config.php' => function () {
+        $GLOBALS['httpVerifyCertificates'] = false;
+        $client = new Snoopy();
+        unset($GLOBALS['httpVerifyCertificates']);
+        snoopyAssertSame(false, $client->verify_certificates, 'Configured opt-out was not picked up');
+        snoopyAssertTrue($client->fetch('https://tracker.test/feed'), 'HTTPS request did not complete');
+        snoopyAssertTrue(
+            array_search('-k', snoopyCurlArgs(), true) !== false,
+            'Configured opt-out did not reach curl'
+        );
+    },
+    'the proxy leg is checked on the same terms' => function () {
+        $client = new Snoopy();
+        $client->proxy_host = '127.0.0.1';
+        $client->proxy_port = 3128;
+        snoopyAssertTrue($client->fetch('https://tracker.test/feed'), 'Proxied HTTPS request did not complete');
+        $args = snoopyCurlArgs();
+        snoopyAssertSame(
+            false,
+            array_search('--proxy-insecure', $args, true),
+            'The proxy leg was made insecure while checking is on'
+        );
+        snoopyAssertTrue(
+            array_search('--proxy', $args, true) !== false,
+            'The proxy itself must still be passed to curl'
+        );
+
+        $client = new Snoopy();
+        $client->verify_certificates = false;
+        $client->proxy_host = '127.0.0.1';
+        $client->proxy_port = 3128;
+        snoopyAssertTrue($client->fetch('https://tracker.test/feed'), 'Proxied HTTPS request did not complete');
+        snoopyAssertTrue(
+            array_search('--proxy-insecure', snoopyCurlArgs(), true) !== false,
+            'An install that opts out must still reach a self-signed proxy'
+        );
+    },
+    // curl exits 60 when it cannot verify the peer. "error 60" on its own tells
+    // an admin with a self-signed indexer nothing about what to do.
+    'a certificate failure says what it was and how to opt out' => function () {
+        putenv('SNOOPY_TEST_EXIT=60');
+        try {
+            $client = new Snoopy();
+            snoopyAssertSame(false, $client->fetch('https://tracker.test/feed'), 'A failed fetch reported success');
+            snoopyAssertTrue(
+                stripos($client->error, 'certificate') !== false,
+                'The failure must say it was the certificate, got: ' . $client->error
+            );
+            snoopyAssertTrue(
+                strpos($client->error, 'httpVerifyCertificates') !== false,
+                'The failure must name the setting that turns it off, got: ' . $client->error
+            );
+            snoopyAssertTrue(
+                strpos($client->error, 'tracker.test') !== false,
+                'The failure must name the host, got: ' . $client->error
+            );
+        } finally {
+            putenv('SNOOPY_TEST_EXIT');
+        }
+    },
+    'an ordinary curl failure is reported as before' => function () {
+        putenv('SNOOPY_TEST_EXIT=7');
+        try {
+            $client = new Snoopy();
+            snoopyAssertSame(false, $client->fetch('https://tracker.test/feed'), 'A failed fetch reported success');
+            snoopyAssertSame(
+                'Error: cURL could not retrieve the document, error 7.',
+                $client->error,
+                'A non-certificate failure must keep its wording'
+            );
+        } finally {
+            putenv('SNOOPY_TEST_EXIT');
+        }
+    },
+    // curl exits 35 for any failure in the TLS handshake, verification
+    // included or not: a port answering something that is not TLS reaches it,
+    // and so does a protocol or cipher mismatch. Naming the certificate there
+    // sends an operator to install a certificate authority for a server that
+    // presented no certificate at all.
+    'a handshake failure is not reported as a certificate failure' => function () {
+        putenv('SNOOPY_TEST_EXIT=35');
+        try {
+            $client = new Snoopy();
+            snoopyAssertSame(false, $client->fetch('https://tracker.test/feed'), 'A failed fetch reported success');
+            snoopyAssertSame(
+                'Error: cURL could not retrieve the document, error 35.',
+                $client->error,
+                'A handshake failure must not be diagnosed as a certificate'
+            );
+        } finally {
+            putenv('SNOOPY_TEST_EXIT');
+        }
+    },
+    // The advice is to turn verification off. An install that has already
+    // turned it off is told to do the thing it did, about a check that did
+    // not run -- curl was given -k.
+    'an install that already opted out is not told to opt out' => function () {
+        foreach (array(35, 51, 60, 77) as $exit) {
+            putenv('SNOOPY_TEST_EXIT=' . $exit);
+            try {
+                $client = new Snoopy();
+                $client->verify_certificates = false;
+                snoopyAssertSame(false, $client->fetch('https://tracker.test/feed'), 'A failed fetch reported success');
+                snoopyAssertTrue(
+                    strpos($client->error, 'httpVerifyCertificates') === false,
+                    'With verification off, exit ' . $exit . ' must not name the setting, got: ' . $client->error
+                );
+            } finally {
+                putenv('SNOOPY_TEST_EXIT');
+            }
+        }
+    },
+    // -k and --proxy-insecure are one setting, so either leg can be the one
+    // that failed, and the exit code does not say which. The message names
+    // the host it was fetching from; with a proxy in the way that host may
+    // have presented no certificate at all.
+    'a proxied certificate failure does not blame the origin alone' => function () {
+        putenv('SNOOPY_TEST_EXIT=60');
+        try {
+            $client = new Snoopy();
+            $client->proxy_host = '127.0.0.1';
+            $client->proxy_port = 3128;
+            $client->proxy_proto = 'https';
+            snoopyAssertSame(false, $client->fetch('https://tracker.test/feed'), 'A failed fetch reported success');
+            snoopyAssertTrue(
+                stripos($client->error, 'proxy') !== false,
+                'A proxied failure must say the proxy could be the one, got: ' . $client->error
+            );
+            snoopyAssertTrue(
+                strpos($client->error, 'tracker.test') !== false,
+                'and must still name the host it was fetching, got: ' . $client->error
+            );
+        } finally {
+            putenv('SNOOPY_TEST_EXIT');
+        }
     },
 );
 

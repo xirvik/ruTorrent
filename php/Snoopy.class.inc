@@ -87,6 +87,9 @@ class Snoopy
 	// hosts exempt from the check above, matched against the URL host verbatim
 	var $private_allowlist	=	array();
 
+	// check the certificate an HTTPS server presents
+	var $verify_certificates =	true;
+
 	/**** Private variables ****/
 
 	var $_maxlinelen	=	4096;			// max line length (headers)
@@ -109,6 +112,7 @@ class Snoopy
 		global $httpUseGzip;
 		global $httpBlockPrivateNetworks;
 		global $httpPrivateNetworkAllowlist;
+		global $httpVerifyCertificates;
 
 		if(isset($httpUserAgent))
 			$this->agent = $httpUserAgent;
@@ -129,6 +133,8 @@ class Snoopy
 			$this->block_private = $httpBlockPrivateNetworks;
 		if(isset($httpPrivateNetworkAllowlist) && is_array($httpPrivateNetworkAllowlist))
 			$this->private_allowlist = $httpPrivateNetworkAllowlist;
+		if(isset($httpVerifyCertificates))
+			$this->verify_certificates = (bool)$httpVerifyCertificates;
 		if(isset($httpIP))
 			$this->IP = $httpIP;
 	}
@@ -333,11 +339,70 @@ class Snoopy
 				{
 					$this->_redirectdepth++;
 					$this->lastredirectaddr=$this->_redirectaddr;
+					if($this->redirectLeavesOrigin($parts,$this->_redirectaddr))
+						$this->dropCredentials();
 					$ret = $this->fetch($this->_redirectaddr);
 				}
 			}
 		}
 		return($ret);
+	}
+
+	// Whether following this redirect hands the request to somewhere the
+	// credentials were not meant for. What they were meant for is an origin:
+	// the scheme, the host and the port together, each port carrying its
+	// scheme's default when the url does not name one. A different port on the
+	// same name is a different service -- often somebody else's, on a host
+	// that hands ports out -- so it is as much a move as a different name is,
+	// and it is what curl treats as a new origin for custom headers too.
+	//
+	// One move keeps them, and is the only one: the same host answering on
+	// https where it was asked on http, both on their default ports. Trackers
+	// answer exactly that, and an upgrade takes nothing away. Every other
+	// crossing drops them, https -> http included, where the credential would
+	// otherwise go out in clear.
+	protected function redirectLeavesOrigin($parts,$redirect)
+	{
+		$to = parse_url($redirect);
+		if(!is_array($to) || !isset($to["host"]))
+			return(false);
+		$fromScheme = isset($parts["scheme"]) ? strtolower($parts["scheme"]) : "";
+		$toScheme = isset($to["scheme"]) ? strtolower($to["scheme"]) : $fromScheme;
+		$fromHost = strtolower(isset($parts["host"]) ? $parts["host"] : "");
+		$toHost = strtolower($to["host"]);
+		$fromPort = self::effectivePort($parts,$fromScheme);
+		$toPort = self::effectivePort($to,$toScheme);
+		if(($fromScheme===$toScheme) && ($fromHost===$toHost) && ($fromPort===$toPort))
+			return(false);
+		return(!(($fromHost===$toHost) &&
+			($fromScheme==="http") && ($fromPort===80) &&
+			($toScheme==="https") && ($toPort===443)));
+	}
+
+	// The port this url is addressed on, named or implied by its scheme.
+	static protected function effectivePort($parts,$scheme)
+	{
+		if(isset($parts["port"]) && ($parts["port"]!==''))
+			return(intval($parts["port"]));
+		if($scheme==="https")
+			return(443);
+		if($scheme==="ftp")
+			return(21);
+		return(80);
+	}
+
+	// What was collected for the host that was asked, and only for it: the
+	// basic credentials parsed out of the url, the cookie jar (loaded for that
+	// host by fetchComplex, then added to by its Set-Cookie headers) and an
+	// Authorization header a caller put in rawheaders.
+	protected function dropCredentials()
+	{
+		$this->user = "";
+		$this->pass = "";
+		$this->cookies = array();
+		foreach(array_keys($this->rawheaders) as $name)
+			if(strcasecmp($name,"Authorization")===0)
+				unset($this->rawheaders[$name]);
 	}
 
 	protected function checkTarget($host)
@@ -640,13 +705,18 @@ class Snoopy
 		}
 
 		if($this->_isproxy)
-			$cmdline_params .= " --proxy-insecure --proxy ".(empty($this->proxy_proto) ? '' : $this->proxy_proto.'://').$this->proxy_host.":".$this->proxy_port;
+		{
+			if(!$this->verify_certificates)
+				$cmdline_params .= " --proxy-insecure";
+			$cmdline_params .= " --proxy ".(empty($this->proxy_proto) ? '' : $this->proxy_proto.'://').$this->proxy_host.":".$this->proxy_port;
+		}
 
 		$headerfile = FileUtil::getTempFilename('https-header');
 		$contfile = FileUtil::getTempFilename('https-body');
 
-		# accept self-signed certs
-		$cmdline_params .= " -k -s ";
+		if(!$this->verify_certificates)
+			$cmdline_params .= " -k";
+		$cmdline_params .= " -s ";
 		exec(escapeshellarg(Utility::getExternal('curl'))." -g -D ".escapeshellarg($headerfile)." -o ".escapeshellarg($contfile)." ".$cmdline_params." ".escapeshellarg($url),$results,$return);
 		$this->_redirectaddr = false;
 		$this->headers = array();
@@ -656,7 +726,35 @@ class Snoopy
 		$is_gzipped = false;
 		if($return)
 		{
-			$this->error = "Error: cURL could not retrieve the document, error $return.";
+			// 51, 60 and 77 are the exits curl uses when verifying is what
+			// failed. Saying so beats "error 60" for anyone whose indexer signs
+			// its own certificate.
+			//
+			// 35 is not one of them: it is any failure in the TLS handshake, so
+			// a port answering something that is not TLS reaches it, and so
+			// does a protocol or cipher mismatch. Neither says a certificate
+			// was rejected, and the advice that follows would send an operator
+			// to install a certificate authority for a server that presented no
+			// certificate. Nor is any of this worth saying when the check was
+			// already off: curl was given -k, so nothing was verified and there
+			// is nothing left to turn off.
+			//
+			// -k and --proxy-insecure are the same setting here, so with a
+			// proxy in the way either leg can be the one that failed and the
+			// exit code does not say which. The host named is the one being
+			// fetched from, which through a proxy may have presented no
+			// certificate at all, so it is named as one of the two rather than
+			// as the answer.
+			if($this->verify_certificates && in_array($return,array(51,60,77),true))
+			{
+				$whose = $this->_isproxy
+					? "\"".$this->host."\", or of the proxy it was reached through,"
+					: "\"".$this->host."\"";
+				$this->error = "Error: cURL could not verify the certificate of ".$whose." (error $return). "
+					."Install the certificate authority that signed it, or set \$httpVerifyCertificates to false in conf/config.php to stop checking.";
+			}
+			else
+				$this->error = "Error: cURL could not retrieve the document, error $return.";
 		}
 		else
 		{

@@ -22,8 +22,29 @@ if(isset($HTTP_RAW_POST_DATA))
 			case "cmd":
 			{
 				$c = getCmd(rawurldecode($parts[1]));
-				if(strpos($c,"execute")===false)
-					$add[] = $c;
+				// Every other door to rtorrent asks conf/xmlrpc_proxy.php what
+				// a caller may name. This one asked whether the word "execute"
+				// appeared anywhere in the string, which is neither the same
+				// list nor the same question: import, try_import, method.insert
+				// and system.shutdown carry no "execute" and were taken as they
+				// arrived. The modes below then put the string where rtorrent
+				// runs it -- as a method name of its own in glbl, ttl and prp,
+				// and as a command parameter of d.multicall in list, fls, prs,
+				// trk and trkall, where it is a command and not a value.
+				//
+				// Asked over the shared list instead, so that this door and the
+				// raw-XMLRPC door below refuse the same commands.
+				$refusedCommand = XMLRPCProxy::refusedCommandName($c);
+				if($refusedCommand !== null)
+				{
+					FileUtil::toLog("httprpc: refused a command parameter naming ".$refusedCommand);
+					header("HTTP/1.0 403 Forbidden");
+					CachedEcho::send("Refused: this server does not allow ".
+						htmlspecialchars($refusedCommand,ENT_QUOTES,"UTF-8").
+						" on this connection.","text/html");
+					exit;
+				}
+				$add[] = $c;
 				break;
 			}
 			case "s":
@@ -199,7 +220,14 @@ function makeSimpleCall($cmds,$hash)
 }
 
 $result = null;
+$refused = false;
 
+// Several modes name a command from request input: setsettings and setprops
+// concatenate one, and glbl, ttl and prp take cmd= as a name outright. A name
+// that is not one stops the mode here, with whatever it had built discarded
+// unsent, rather than travelling any further.
+try
+{
 switch($mode)
 {
 	case "list":	/**/
@@ -772,11 +800,24 @@ switch($mode)
 		break;
 	}
 }
+}
+catch(rXMLRPCInvalidCommandName $e)
+{
+	$result = null;
+	$refused = true;
+	// The name itself only ever reaches the log, and with anything that is not
+	// printable ASCII replaced, so that it cannot forge a line there or be
+	// reflected into the answer.
+	FileUtil::toLog("httprpc: ".preg_replace('/[^\x20-\x7e]/','.',$e->getMessage()));
+}
 
 if(is_null($result))
 {
 	header("HTTP/1.0 500 Server Error");
 	$message = "Could not reach rTorrent over XMLRPC. Is rTorrent running?";
+	if($refused)
+		$message = "Refused: not an rtorrent command name.";
+	else
 	if(isset($req) && $req->fault)
 		$message = ($req->faultString==='') ? "Warning: the XMLRPC call failed." : $req->faultString;
 	CachedEcho::send($message,"text/html");

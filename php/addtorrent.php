@@ -4,17 +4,44 @@ require_once( 'Snoopy.class.inc');
 require_once( 'rtorrent.php' );
 set_time_limit(0);
 
+/**
+ * Encode a value for use as a literal in the script this page serves.
+ *
+ * The result of this page is evaluated by the client (js/content.js), so
+ * every reflected value has to be a complete literal that no input can end.
+ * The HEX flags also keep <, >, & and both quote characters out of the bytes,
+ * so the response cannot be turned into markup by asking for it directly.
+ *
+ * A unix filename is a string of bytes and need not be valid UTF-8, and it
+ * reaches here as name[]. json_encode() answers false for bytes it cannot
+ * encode, which concatenates as nothing at all and leaves the call with an
+ * argument missing rather than an argument that is a literal. So the invalid
+ * bytes become the replacement character, and a refusal for any other reason
+ * still yields a literal.
+ */
+function addtorrent_literal($value)
+{
+	$literal = json_encode(strval($value),
+		JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT|JSON_UNESCAPED_SLASHES|
+		JSON_INVALID_UTF8_SUBSTITUTE);
+	return($literal===false ? '""' : $literal);
+}
+
 if(isset($_REQUEST['result']))
 {
+	$results = is_array($_REQUEST['result']) ? array_values($_REQUEST['result']) : array($_REQUEST['result']);
 	if(isset($_REQUEST['json']))
-		CachedEcho::send( '{ "result" : "'.$_REQUEST['result'][0].'" }',"application/json");
+		CachedEcho::send( '{ "result" : '.addtorrent_literal(isset($results[0]) ? $results[0] : '').' }',
+			"application/json");
 	else
 	{
+		$names = (isset($_REQUEST['name']) && is_array($_REQUEST['name']))
+			? array_values($_REQUEST['name']) : array();
 		$js = '';
-		foreach( $_REQUEST['result'] as $ndx=>$result )
-			$js.= ('noty("'.(isset($_REQUEST['name'][$ndx]) ? addslashes(rawurldecode(htmlspecialchars($_REQUEST['name'][$ndx]))).' - ' : '').
-				'"+theUILang.addTorrent'.$_REQUEST['result'][$ndx].
-				',"'.($_REQUEST['result'][$ndx]=='Success' ? 'success' : 'error').'");');
+		foreach( $results as $ndx=>$result )
+			$js.= ('noty('.addtorrent_literal(isset($names[$ndx]) ? ($names[$ndx].' - ') : '').
+				'+theUILang["addTorrent"+'.addtorrent_literal($result).']'.
+				','.addtorrent_literal(($result=='Success') ? 'success' : 'error').');');
 		CachedEcho::send($js,"text/html");
 	}
 }
@@ -31,9 +58,11 @@ else
 		if((strlen($dir_edit)>0) && !rTorrentSettings::get()->correctDirectory($dir_edit))
 			$uploaded_files = array( array( 'status' => "FailedDirectory" ) );
 	}
+	// No addition is taken from the request. An addition is an rtorrent command
+	// appended to the load call, so accepting one here would let a request name
+	// the commands the daemon runs. The parameter stays on rTorrent::sendTorrent()
+	// and rTorrent::sendMagnet() for the plugins that build one in php.
 	$addition = null;
-	if(isset($_REQUEST['addition']) && is_array($_REQUEST['addition']))
-		$addition = $_REQUEST['addition'];
 	if(empty($uploaded_files))
 	{
 		if(isset($_FILES['torrent_file']))
