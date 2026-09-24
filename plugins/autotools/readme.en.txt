@@ -36,9 +36,10 @@ Template variables:
   The variable would be set to tracker name.
 
 {NOW}
-  The variable would be set to the current date using strftime() function.
-  Default format is "%Y-%m-%d". It is possible to set custom format using
-  syntax: "{NOW[:<format>]}", for example: "{NOW:%Y-%m-%d %H:%M}"
+  The variable would be set to the current date, formatted with strftime()
+  conversions as the C locale renders them. Default format is "%Y-%m-%d".
+  It is possible to set custom format using syntax: "{NOW[:<format>]}",
+  for example: "{NOW:%Y-%m-%d %H:%M}"
 
 
 ---------------------------------------------------------------------------------------------

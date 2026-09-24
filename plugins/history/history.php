@@ -271,6 +271,13 @@ class rHistory
 		return((floor($bt*10)/10)." ".$a[$ndx]);
 	}
 
+	// The C locale's date and time, "Mon Sep  7 14:13:20 2026", in the
+	// current timezone.
+	static public function formatTime( $ts )
+	{
+		return( date('D M ',$ts).sprintf('%2d',date('j',$ts)).date(' H:i:s Y',$ts) );
+	}
+
 	public function pushBulletNotify( $data )
 	{
 		global $pushBulletNotifications, $pushBulletEndpoint;
@@ -299,9 +306,9 @@ class rHistory
 			self::bytes($data['downloaded']),
 			self::bytes($data['uploaded']),
 			$data['ratio'],
-			strftime('%c',$data['creation']),
-			strftime('%c',$data['added']),
-			strftime('%c',$data['finished']),
+			self::formatTime($data['creation']),
+			self::formatTime($data['added']),
+			self::formatTime($data['finished']),
 			$data['tracker'],
 		);
 		if( !is_null(rTorrentSettings::get()->tz) )

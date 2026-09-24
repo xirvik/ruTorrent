@@ -596,3 +596,87 @@ function rtExec( $cmds, $hash, $dbg )
 	}
 	else return $req;
 }
+
+
+//------------------------------------------------------------------------------
+// Format $time with a strftime() format, as the C locale renders it.
+// The {NOW:<format>} label template takes strftime() conversions; this
+// renders them through date(). Conversions it does not know are copied
+// through unchanged, as strftime() does.
+//------------------------------------------------------------------------------
+function rtStrftime( $format, $time = null )
+{
+	if( $time === null )
+		$time = time();
+	$t = function( $f ) use ( $time ) { return date( $f, $time ); };
+	$wday = (int)$t( 'w' );
+	$yday = (int)$t( 'z' );
+	// conversion => array( value, width, default padding ) for numbers,
+	// or the finished text
+	$numbers = array
+	(
+		'C' => array( intdiv( (int)$t( 'Y' ), 100 ), 2, '0' ),
+		'd' => array( (int)$t( 'j' ), 2, '0' ),
+		'e' => array( (int)$t( 'j' ), 2, ' ' ),
+		'g' => array( (int)$t( 'o' ) % 100, 2, '0' ),
+		'G' => array( (int)$t( 'o' ), 1, '0' ),
+		'H' => array( (int)$t( 'G' ), 2, '0' ),
+		'I' => array( (int)$t( 'g' ), 2, '0' ),
+		'j' => array( $yday + 1, 3, '0' ),
+		'k' => array( (int)$t( 'G' ), 2, ' ' ),
+		'l' => array( (int)$t( 'g' ), 2, ' ' ),
+		'm' => array( (int)$t( 'n' ), 2, '0' ),
+		'M' => array( (int)$t( 'i' ), 2, '0' ),
+		's' => array( (int)$t( 'U' ), 1, '0' ),
+		'S' => array( (int)$t( 's' ), 2, '0' ),
+		'u' => array( (int)$t( 'N' ), 1, '0' ),
+		'U' => array( intdiv( $yday + 7 - $wday, 7 ), 2, '0' ),
+		'V' => array( (int)$t( 'W' ), 2, '0' ),
+		'w' => array( $wday, 1, '0' ),
+		'W' => array( intdiv( $yday + 7 - ( $wday + 6 ) % 7, 7 ), 2, '0' ),
+		'y' => array( (int)$t( 'Y' ) % 100, 2, '0' ),
+		'Y' => array( (int)$t( 'Y' ), 1, '0' ),
+	);
+	$texts = array
+	(
+		'a' => $t( 'D' ),
+		'A' => $t( 'l' ),
+		'b' => $t( 'M' ),
+		'B' => $t( 'F' ),
+		'c' => $t( 'D M ' ).sprintf( '%2d', $t( 'j' ) ).$t( ' H:i:s Y' ),
+		'D' => $t( 'm/d/y' ),
+		'F' => $t( 'Y-m-d' ),
+		'h' => $t( 'M' ),
+		'n' => "\n",
+		'p' => $t( 'A' ),
+		'P' => $t( 'a' ),
+		'r' => $t( 'h:i:s A' ),
+		'R' => $t( 'H:i' ),
+		't' => "\t",
+		'T' => $t( 'H:i:s' ),
+		'x' => $t( 'm/d/y' ),
+		'X' => $t( 'H:i:s' ),
+		'z' => $t( 'O' ),
+		'Z' => $t( 'T' ),
+		'%' => '%',
+	);
+	return( preg_replace_callback( '/%([-_0^]?)[EO]?([a-zA-Z%])/',
+		function( $m ) use ( $numbers, $texts )
+		{
+			list( , $flag, $conv ) = $m;
+			if( isset( $numbers[$conv] ) )
+			{
+				list( $value, $width, $pad ) = $numbers[$conv];
+				if( $flag == '-' )
+					return( (string)$value );
+				if( $flag == '_' )
+					$pad = ' ';
+				elseif( $flag == '0' )
+					$pad = '0';
+				return( str_pad( (string)$value, $width, $pad, STR_PAD_LEFT ) );
+			}
+			if( isset( $texts[$conv] ) )
+				return( ($flag == '^' && $conv != 'P') ? strtoupper( $texts[$conv] ) : $texts[$conv] );
+			return( $m[0] );
+		}, $format ) );
+}
