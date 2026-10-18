@@ -40,6 +40,11 @@ require_once( 'settings.php' );
 
 class Snoopy
 {
+	// $status after a body that could not be decoded, below 100 like the
+	// -100 of a read timeout, so callers that already treat a status under
+	// 100 as "nothing arrived" need no new case; the reason is in $error.
+	const RESPONSE_BODY_FAILED = -101;
+
 	/**** Public variables ****/
 
 	/* user definable vars */
@@ -71,7 +76,7 @@ class Snoopy
 	var $error		=	"";			// error messages sent here
 	var $response_code	=	"";			// response code returned from server
 	var $headers		=	array();		// headers returned from server sent here
-	var $maxlength		=	4194304;		// max return data length (body)
+	var $maxlength		=	4194304;		// max return data length (body), see $httpMaxResponseLength
 	var $read_timeout	=	0;			// timeout on read operations, in seconds
 
 	var $timed_out		=	false;			// if a read operation timed out
@@ -110,6 +115,7 @@ class Snoopy
 		global $httpUserAgent;
 		global $httpTimeOut;
 		global $httpUseGzip;
+		global $httpMaxResponseLength;
 		global $httpBlockPrivateNetworks;
 		global $httpPrivateNetworkAllowlist;
 		global $httpVerifyCertificates;
@@ -129,6 +135,11 @@ class Snoopy
 		}
 		if (isset($httpUseGzip))
 			$this->use_gzip = $httpUseGzip;
+		// Anything that is not a positive byte count would refuse every fetch,
+		// which is not what an operator who wrote it meant; the bound the class
+		// ships with stands instead.
+		if (isset($httpMaxResponseLength) && (int)$httpMaxResponseLength > 0)
+			$this->maxlength = (int)$httpMaxResponseLength;
 		if(isset($httpBlockPrivateNetworks))
 			$this->block_private = $httpBlockPrivateNetworks;
 		if(isset($httpPrivateNetworkAllowlist) && is_array($httpPrivateNetworkAllowlist))
@@ -497,6 +508,67 @@ class Snoopy
 		return( $value ? strtotime($value) : false );
 	}
 
+	protected function refuseResponseBody($reason)
+	{
+		$this->status = self::RESPONSE_BODY_FAILED;
+		$this->error = $reason;
+		$this->results = "";
+		return false;
+	}
+
+	// $maxlength as a byte count, which is what both paths bound against.
+	// $httpMaxResponseLength sets it; a caller may assign it directly.
+	protected function responseLimit()
+	{
+		return max(0, (int)$this->maxlength);
+	}
+
+	// Inflates a gzip body to no more than $maxlength bytes. Both paths stop
+	// reading just past that many compressed bytes, but zeros compress about
+	// 1000:1, so 64 KiB from a hostile or broken server inflate to 64 MiB, and
+	// the only thing that used to stop that was memory_limit, with a fatal
+	// error.
+	// Returns false for a body that is malformed or inflates past the bound.
+	// An empty or absent body is an empty body: a 304 or 204 may carry the
+	// header with no member behind it. gzinflate() skips the 10-byte header
+	// and never checked the trailer, so on that branch an answer the read cut
+	// short still decodes when its deflate stream came through whole; the
+	// external gzip refuses a truncated member.
+	protected function decodeGzipBody($encoded)
+	{
+		if($encoded === '' || $encoded === false)
+			return '';
+		if(!is_string($encoded))
+			return false;
+		$limit = $this->responseLimit();
+		if(function_exists("gzinflate"))
+		{
+			// max_length is not an exact cap: zlib stops growing its buffer
+			// there and the last round overshoots it, so the length is checked
+			// below. The one byte of slack is insurance only; on PHP 7.4, 8.1
+			// and 8.5 an exact max_length already decodes a body of exactly
+			// that length.
+			$decoded = @gzinflate(substr($encoded, 10), $limit + 1);
+		}
+		else
+		{
+			$randName = FileUtil::getTempFilename('answer');
+			file_put_contents($randName.".gz",$encoded);
+			exec(escapeshellarg(Utility::getExternal('gzip'))." -d ".$randName.".gz",$output,$return);
+			$decoded = false;
+			if(is_file($randName))
+			{
+				// One byte past the bound is read, which is how an oversized
+				// file is told from one of exactly $maxlength bytes.
+				$decoded = @file_get_contents($randName, false, null, 0, $limit + 1);
+				unlink($randName);
+			}
+			else
+				unlink($randName.".gz");
+		}
+		return (is_string($decoded) && strlen($decoded) <= $limit) ? $decoded : false;
+	}
+
 	function _httprequest($url,$fp,$URI,$http_method,$content_type="",$body="")
 	{
 		if($this->passcookies && $this->_redirectaddr)
@@ -602,41 +674,33 @@ class Snoopy
 		}
 
 		$results = "";
+		$limit = $this->responseLimit();
 		while( $data = fread($fp, 4096) )
 		{
 			$results .= $data;
-			if( strlen($results) > $this->maxlength )
+			if( strlen($results) > $limit )
 			        break;
 		}
-		// gunzip
-		if ( $is_gzipped )
-		{
-			if(function_exists("gzinflate"))
-			{
-				$results = substr($results, 10);
-				$results = gzinflate($results);
-			}
-			else
-			{
-				$randName = FileUtil::getTempFilename('answer');
-				file_put_contents($randName.".gz",$results);
-				exec(escapeshellarg(Utility::getExternal('gzip'))." -d ".$randName.".gz",$results,$return);
-				if(is_file($randName))
-				{
-					$results = file_get_contents($randName);
-					unlink($randName);
-				}
-				else
-				{
-					unlink($randName.".gz");
-				}
-			}
-		}
-
 		if ($this->read_timeout > 0 && $this->_check_timeout($fp))
 		{
 			$this->status=-100;
 			return false;
+		}
+
+		// The read above stops once the body is known to be longer than the
+		// bound, whether it is compressed or not. Handing back the part that
+		// arrived, under the response's own 200, would leave a caller unable
+		// to tell a cut-off document from a whole one, so it is refused on the
+		// same terms as a body that inflates past the bound.
+		if( strlen($results) > $limit )
+			return $this->refuseResponseBody('oversized-response-body');
+
+		// gunzip
+		if ( $is_gzipped )
+		{
+			$results = $this->decodeGzipBody($results);
+			if($results === false)
+				return $this->refuseResponseBody('invalid-or-oversized-gzip');
 		}
 
 		$this->results = $results;
@@ -758,7 +822,11 @@ class Snoopy
 		}
 		else
 		{
-			$results = @file_get_contents($contfile);
+			// One byte past the bound, which is how a body over it is told
+			// from one of exactly that length, and which keeps a file curl
+			// wrote without any bound of its own out of memory.
+			$limit = $this->responseLimit();
+			$results = @file_get_contents($contfile, false, null, 0, $limit + 1);
 			$result_headers = file($headerfile);
 			foreach($result_headers as $header)
 			{
@@ -801,28 +869,21 @@ class Snoopy
 					$is_gzipped = true;
 				$this->headers[] = $header;
 			}
+			if( is_string($results) && strlen($results) > $limit )
+			{
+				@unlink($headerfile);
+				@unlink($contfile);
+				return $this->refuseResponseBody('oversized-response-body');
+			}
 			// gunzip
 			if ( $is_gzipped )
 			{
-				if(function_exists("gzinflate"))
+				$results = $this->decodeGzipBody($results);
+				if($results === false)
 				{
-					$results = substr($results, 10);
-					$results = gzinflate($results);
-				}
-				else
-				{
-					$randName = FileUtil::getTempFilename('answer');
-					file_put_contents($randName.".gz",$results);
-					exec(escapeshellarg(Utility::getExternal('gzip'))." -d ".$randName.".gz",$results,$return);
-					if(is_file($randName))
-					{
-						$results = file_get_contents($randName);
-						unlink($randName);
-					}
-					else
-					{
-						unlink($randName.".gz");
-					}
+					@unlink($headerfile);
+					@unlink($contfile);
+					return $this->refuseResponseBody('invalid-or-oversized-gzip');
 				}
 			}
 			$this->results = $results;

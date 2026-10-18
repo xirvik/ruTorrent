@@ -4,7 +4,13 @@ require_once( 'util.php' );
 class rCache
 {
 	protected $dir;
-	// How each cache file looked when this process loaded it, keyed by cache key.
+	// How a cache file looked when get() loaded it into a merge-capable
+	// object: the stamp stampOf() read and a digest of the bytes, which
+	// decides when the stamp repeats. Kept per loaded object, not per cache
+	// key: two objects of one key in one process can hold different versions,
+	// and a load through one must not stand for the other. spl_object_id()
+	// is reused once an object is freed, so each entry also holds a
+	// WeakReference that tells whether it still describes the same object.
 	protected static $loadStamps = [];
 
 	public function __construct( $name = '' )
@@ -24,9 +30,13 @@ class rCache
 		}
 		return(true);
 	}
-	protected static function getCacheKey( $rss )
+	// What get() recorded when it loaded this very object; null when the
+	// object was not loaded from a cache file, or when its class has no
+	// merge() and get() therefore recorded nothing.
+	protected static function loadedStamp( $rss )
 	{
-		return(get_class($rss).':'.$rss->hash);
+		$loaded = self::$loadStamps[spl_object_id($rss)] ?? null;
+		return((!is_null($loaded) && ($loaded['object']->get() === $rss)) ? $loaded : null);
 	}
 	// A key names one file inside the cache directory: the shipped ones are a
 	// '<name>.dat', an md5 or a short fixed word. It is concatenated into a
@@ -53,6 +63,47 @@ class rCache
 		if(is_callable(array($class,'cacheClasses')))
 			$allowed = array_merge($allowed,call_user_func(array($class,'cacheClasses')));
 		return($allowed);
+	}
+	// A class the caller declares may be nested in its value, not stand in
+	// its place: an object's file must hold that object's class at its root,
+	// and an array's file an array. The serialized header is checked before
+	// unserialize(), so a wrong root is not constructed on the way to being
+	// refused. set() writes every cache file with serialize(), which writes
+	// an object as O: unless its class implements Serializable without
+	// __serialize() (that writes C:), and no class stored in a cache does.
+	protected static function hasExpectedRoot( $bytes, $target )
+	{
+		if(is_array($target))
+			return(strncmp($bytes,'a:',2)===0);
+		if(!is_object($target))
+			return(false);
+		$class = get_class($target);
+		$prefix = 'O:'.strlen($class).':"'.$class.'":';
+		return(strncmp($bytes,$prefix,strlen($prefix))===0);
+	}
+	// What a refused file holds at its root, for the log line: one of a few
+	// fixed words, or the class its header names -- only when that name is
+	// the length the header claims, at most ROOT_NAME_MAX bytes and spelled
+	// in ASCII class-name characters, so no other byte of the file is logged.
+	const ROOT_NAME_MAX = 128;
+	protected static function describeRoot( $bytes )
+	{
+		if($bytes === '')
+			return('an empty file');
+		if(strncmp($bytes,'a:',2)===0)
+			return('an array');
+		if(preg_match('/^[OC]:([0-9]{1,3}):"([A-Za-z_][A-Za-z0-9_\\\\]*)":/',
+				substr($bytes,0,self::ROOT_NAME_MAX+9),$match) &&
+			(strlen($match[2]) === intval($match[1])) &&
+			(strlen($match[2]) <= self::ROOT_NAME_MAX))
+			return('class '.$match[2]);
+		if(preg_match('/^[OC]:/',$bytes))
+			return('an object');
+		if(preg_match('/^[bids]:/',$bytes))
+			return('a scalar');
+		if(strncmp($bytes,'N;',2)===0)
+			return('null');
+		return('no serialized value');
 	}
 	// What the walk below may spend. Its shape is chosen by whoever wrote the
 	// cache file, so it cannot be allowed to cost whatever that shape asks
@@ -120,9 +171,11 @@ class rCache
 					: 'names a class it may not hold';
 				return(true);
 			}
-			if($seen->contains($value))
+			// Not contains()/attach(): PHP 8.5 deprecates them, and
+			// offsetExists()/offsetSet() do the same since PHP 5.3.
+			if($seen->offsetExists($value))
 				return(false);
-			$seen->attach($value);
+			$seen->offsetSet($value);
 			$value = (array)$value;
 		}
 		if(is_array($value))
@@ -131,28 +184,50 @@ class rCache
 					return(true);
 		return(false);
 	}
-	// A cache file's identity, used to tell whether it is still the one this
-	// process loaded. filemtime resolves only to the second, so two writes
-	// inside one second look identical -- and that is the common case here:
-	// replacing a torrent fires three writers within the same second. set()
-	// always publishes through rename(), which gives the file a fresh inode,
-	// so the inode is what actually separates them.
+	// A cache file's identity, used to tell whether it is still the one an
+	// object was loaded from. filemtime resolves only to the second, so two
+	// writes inside one second look identical -- and that is the common case
+	// here: replacing a torrent fires three writers within the same second.
+	// set() always publishes through rename(), which gives the file a fresh
+	// inode, so the inode is what separates them -- until it repeats, which
+	// hasChangedSinceLoad() is for.
 	protected static function stampOf( $name )
 	{
 		clearstatcache(true, $name);
 		$st = @stat($name);
 		return($st===false ? null : $st['ino'].':'.$st['mtime'].':'.$st['size']);
 	}
-	// True when the file on disk is no longer the one this process loaded.
-	protected static function hasChangedSinceLoad( $name, $stamp )
+	// True when the file on disk is no longer the one the object was loaded
+	// from, false when it still is, null when that cannot be told.
+	//
+	// A repeated stamp does not settle it. rename() frees the inode the
+	// object was loaded from, and the next writer's temporary file is handed
+	// that number again (12 of 12 times on an idle ext4); with a same-second
+	// mtime and a change of the same length, two stores by other writers
+	// leave the loaded stamp on a file holding neither its bytes, and a writer
+	// trusting the stamp published its stale copy over both. So a repeated
+	// stamp is followed by comparing a digest of the bytes, under the key
+	// lock the caller holds, which is what makes the comparison and the
+	// store one decision. When the bytes cannot be read there is nothing to
+	// compare, and the caller must not publish over a version it cannot
+	// see: that is the null.
+	protected static function hasChangedSinceLoad( $name, $loaded )
 	{
-		if(!is_null($stamp))
-			return($stamp !== self::stampOf($name));
-		// This process loaded nothing: the file was absent or unreadable when
-		// get() ran. Any file present now was published by someone else, and
-		// merging what is on disk is always safe for the merge-capable
-		// classes that are the only callers of this check.
-		return(is_file($name));
+		if(is_null($loaded) || is_null($loaded['stamp']))
+		{
+			// The object holds nothing it can compare with: it was never
+			// loaded, or the file was absent or unreadable when get() ran.
+			// Any file present now may hold what the object has not seen,
+			// and merging what is on disk is always safe for the
+			// merge-capable classes that are the only callers of this check.
+			return(is_file($name));
+		}
+		if($loaded['stamp'] !== self::stampOf($name))
+			return(true);
+		$digest = @hash_file('sha256',$name);
+		if($digest === false)
+			return(null);
+		return($digest !== $loaded['digest']);
 	}
 	public function set( $rss, $arg = null )
 	{
@@ -177,11 +252,17 @@ class rCache
 			return(false);
 		}
 
-		$cacheKey = is_object($rss) ? self::getCacheKey($rss) : null;
-		$stamp = ($cacheKey !== null) ? (self::$loadStamps[$cacheKey] ?? null) : null;
-		if(     is_object($rss) &&
-			method_exists($rss,"merge") &&
-			self::hasChangedSinceLoad($name, $stamp))
+		$loaded = is_object($rss) ? self::loadedStamp($rss) : null;
+		$changed = (is_object($rss) && method_exists($rss,"merge"))
+			? self::hasChangedSinceLoad($name, $loaded) : false;
+		if(is_null($changed))
+		{
+			flock( $lock, LOCK_UN );
+			fclose( $lock );
+			FileUtil::toLog('rCache: '.basename($name).' cannot be read to compare with the loaded version; not stored.');
+			return(false);
+		}
+		if($changed)
 		{
 			$className = get_class($rss);
 			$newInstance = new $className();
@@ -237,6 +318,13 @@ class rCache
 		$ret = @file_get_contents($fname);
 		if($ret!==false)
 		{
+			if(!self::hasExpectedRoot($ret,$rss))
+			{
+				FileUtil::toLog('rCache: '.basename($fname).' does not hold '.
+					(is_object($rss) ? get_class($rss) : 'an array').' at its root (found '.
+					self::describeRoot($ret).'); not loaded.');
+				return(false);
+			}
 			$tmp = @unserialize($ret,array('allowed_classes'=>self::allowedClasses($rss)));
 			if(self::holdsRefusedClass($tmp,strlen($ret),$reason))
 			{
@@ -256,8 +344,13 @@ class rCache
 					(isset($tmp->version) && ($tmp->version==$rss->version))))
 				{
 					$rss = $tmp;
-					$cacheKey = self::getCacheKey($rss);
-					self::$loadStamps[$cacheKey] = $stamp;
+					// Only a merge-capable class ever compares what it
+					// loaded, so only it is remembered and pays for
+					// hashing the file.
+					if(method_exists($rss,"merge"))
+						self::$loadStamps[spl_object_id($rss)] = array(
+							'object' => WeakReference::create($rss),
+							'stamp' => $stamp, 'digest' => hash('sha256',$ret));
 					$ret = true;
 				}
 				else

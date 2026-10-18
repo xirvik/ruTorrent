@@ -4,8 +4,9 @@ require_once(__DIR__ . '/TestCase.php');
 
 /**
  * utf8_encode(), utf8_decode(), strptime(), strftime(), gmstrftime(),
- * xml_set_object() and libxml_disable_entity_loader() are deprecated in the
- * PHP versions ruTorrent runs on, and each call writes a deprecation to the
+ * xml_set_object(), libxml_disable_entity_loader() and, from PHP 8.5,
+ * SplObjectStorage::contains() and attach() are deprecated in the PHP
+ * versions ruTorrent runs on, and each call writes a deprecation to the
  * log. Each code path that used one runs here in its own PHP process with
  * every error reported, so that a deprecation shows up in its output, and
  * the same process computes what the deprecated function would have
@@ -156,20 +157,25 @@ class DeprecatedFunctionReplacementTest extends TestCase
 			$specs[] = "%";
 			$specs[] = "50% off %";
 			$times = array(0, 951782400, 1009843199, 1704067199, 1735689600, 1767225599, 1790000000);
+			$zones = array("UTC", "Europe/Madrid", "America/New_York", "Asia/Kolkata", "Australia/Lord_Howe");
 			$checked = 0;
 			$differ = array();
-			foreach(array("UTC", "Europe/Madrid", "America/New_York", "Asia/Kolkata", "Australia/Lord_Howe") as $zone)
+			foreach($zones as $zone)
 			{
 				date_default_timezone_set($zone);
 				foreach($times as $t)
 					foreach($specs as $spec)
 					{
+						// glibc computes %s with mktime() of the broken-down time
+						// in the process zone (TZ), not in the zone PHP formats in:
+						// with TZ=Europe/Moscow both strftime("%s", 0) and
+						// gmstrftime("%s", 0) answer -10800. TimeFormat renders the
+						// timestamp itself, which is checked below for every zone.
+						if(substr($spec, -1) == "s")
+							continue;
 						$fmt = "<" . $spec . ">";
-						$pairs = array(array(@gmstrftime($fmt, $t), TimeFormat::gmstrftime($fmt, $t)));
-						// PHP reads %s back through the system time zone rather
-						// than its own, so strftime("%s") is only right in UTC.
-						if(($zone == "UTC") || (substr($spec, -1) != "s"))
-							$pairs[] = array(@strftime($fmt, $t), TimeFormat::strftime($fmt, $t));
+						$pairs = array(array(@gmstrftime($fmt, $t), TimeFormat::gmstrftime($fmt, $t)),
+							array(@strftime($fmt, $t), TimeFormat::strftime($fmt, $t)));
 						foreach($pairs as $pair)
 						{
 							$checked++;
@@ -177,9 +183,44 @@ class DeprecatedFunctionReplacementTest extends TestCase
 								$differ[] = $zone . " " . $t . " " . $fmt . " " . json_encode($pair);
 						}
 					}
-				if(TimeFormat::strftime("%s", 1790000000) !== "1790000000")
-					$differ[] = $zone . " %s is the timestamp";
 			}
+			// %s is the timestamp whatever zone PHP formats in and whatever
+			// zone the process runs in.
+			$tz = getenv("TZ");
+			foreach(array("UTC", "Europe/Moscow", "America/New_York") as $process)
+			{
+				putenv("TZ=" . $process);
+				foreach($zones as $zone)
+				{
+					date_default_timezone_set($zone);
+					foreach($times as $t)
+						foreach(array("<%s>", "<%Es>", "<%Os>") as $fmt)
+						{
+							$pair = array(TimeFormat::strftime($fmt, $t), TimeFormat::gmstrftime($fmt, $t));
+							$checked++;
+							if($pair !== array("<" . $t . ">", "<" . $t . ">"))
+								$differ[] = "TZ=" . $process . " " . $zone . " " . $t . " " . $fmt . " " . json_encode($pair);
+						}
+				}
+			}
+			putenv(($tz === false) ? "TZ" : "TZ=" . $tz);
+			// Flags and widths on %s as glibc 2.43 renders them under TZ=UTC,
+			// the one process zone where its %s is the timestamp (captured
+			// 2026-10-17): a space is the default pad, "0" pads with zeros,
+			// "-" keeps an explicit width, and E and O are ignored.
+			$padded = array(
+				0 => array("%6s" => "     0", "%06s" => "000000", "%-6s" => "     0", "%_6s" => "     0",
+					"%^6s" => "     0", "%#6s" => "     0", "%-^6s" => "     0", "%6Es" => "     0", "%06Os" => "000000"),
+				1790000000 => array("%s" => "1790000000", "%1s" => "1790000000", "%6s" => "1790000000",
+					"%12s" => "  1790000000", "%012s" => "001790000000", "%-12s" => "  1790000000"));
+			foreach($padded as $t => $expected)
+				foreach($expected as $spec => $text)
+				{
+					$pair = array(TimeFormat::strftime($spec, $t), TimeFormat::gmstrftime($spec, $t));
+					$checked++;
+					if($pair !== array($text, $text))
+						$differ[] = $t . " " . $spec . " " . json_encode($pair) . " is not " . json_encode($text);
+				}
 			date_default_timezone_set("Europe/Madrid");
 			$now = time();
 			$current = TimeFormat::strftime("%Y-%m-%d %H:%M");
@@ -191,7 +232,7 @@ class DeprecatedFunctionReplacementTest extends TestCase
 		if(!is_array($result))
 			return;
 		$this->assertEquals(array(), $result['differ'], 'TimeFormat renders ' . $result['checked']
-			. ' formats as strftime/gmstrftime did; differ: ' . implode('; ', $result['differ']));
+			. ' formats as strftime/gmstrftime did and %s as the timestamp; differ: ' . implode('; ', $result['differ']));
 		$this->assertQuiet($other, 'TimeFormat');
 	}
 
@@ -231,6 +272,33 @@ class DeprecatedFunctionReplacementTest extends TestCase
 			'setting up the stream parser raises no deprecation: ' . $this->brief($other));
 	}
 
+	// ---- cache: SplObjectStorage::contains() / attach() -------------------
+
+	public function testCacheWalkOverObjectsRaisesNoDeprecation()
+	{
+		// rCache::get() walks every value it unserializes and remembers the
+		// objects it has met, so an object met twice is the path that both
+		// asks whether it was seen and records that it was. PHP 8.5
+		// deprecates SplObjectStorage::contains() and attach() in favour of
+		// offsetExists() and offsetSet(), which exist since PHP 5.3.
+		list($result, $other) = $this->run_isolated('
+			// Bound to rCache rather than a subclass of it, because
+			// constructing an rCache creates the settings directory.
+			$walk = Closure::bind(function($value)
+			{
+				return rCache::holdsRefusedClass($value, 0, $reason);
+			}, null, "rCache");
+			$first = new stdClass();
+			$second = new stdClass();
+			$first->peer = $second;
+			$second->peer = $first;
+			return $walk(array($first, $second));
+		', array('php/cache.php'));
+		$this->assertTrue($result === false, 'a cycle between two objects is walked to the end, not refused: '
+			. json_encode($result) . ' ' . $this->brief($other));
+		$this->assertQuiet($other, 'walking objects for a refused class');
+	}
+
 	// ---- extsearch: libxml_disable_entity_loader() -----------------------
 
 	public function testHtmlEnginesDoNotCallTheEntityLoaderSwitch()
@@ -239,7 +307,8 @@ class DeprecatedFunctionReplacementTest extends TestCase
 		{
 			list($result, $other) = $this->run_isolated('
 				$method = new ReflectionMethod("' . $engine . 'Engine", "disableEntityLoader");
-				$method->setAccessible(true);
+				if(PHP_VERSION_ID < 80100)
+					$method->setAccessible(true);
 				$method->invoke(null);
 				return true;
 			', array('plugins/extsearch/engines.php', 'plugins/extsearch/engines/' . $engine . '.php'));

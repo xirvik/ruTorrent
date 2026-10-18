@@ -2,6 +2,7 @@
 
 require_once(__DIR__ . '/TestCase.php');
 require_once(__DIR__ . '/FakeRtorrentDaemon.php');
+require_once(__DIR__ . '/RtorrentProbeFixture.php');
 
 /**
  * php/addtorrent.php reports a torrent rtorrent already has as a duplicate,
@@ -98,6 +99,10 @@ class AddTorrentDuplicateTest extends TestCase
 		for ($i = 0; $i < $loads; $i++) {
 			$replies[] = array(0);
 		}
+		// An install whose interface has been opened has a settings cache.
+		// This script is driven against a profile of its own, so leave one
+		// there rather than have it probe and spend the replies below.
+		RtorrentProbeFixture::warmSettingsCache($this->base . '/profile');
 		$this->daemon = new FakeRtorrentDaemon($replies, $this->base . '/calls.log');
 
 		$router = $this->base . '/router.php';
@@ -114,7 +119,10 @@ class AddTorrentDuplicateTest extends TestCase
 			. "return true;\n");
 
 		$port = $this->reservePort();
-		$this->server = proc_open(escapeshellarg(PHP_BINARY) . ' -d display_errors=0 -S 127.0.0.1:' . $port
+		// "exec" replaces the shell proc_open() runs the string through, so the
+		// server is the process proc_terminate() signals; /bin/sh forks php and
+		// signalling only the shell would leave the server running.
+		$this->server = proc_open('exec ' . escapeshellarg(PHP_BINARY) . ' -d display_errors=0 -S 127.0.0.1:' . $port
 			. ' ' . escapeshellarg($router), array(
 				0 => array('pipe', 'r'),
 				1 => array('file', $this->base . '/server.out', 'a'),
