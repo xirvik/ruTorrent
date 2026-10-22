@@ -824,7 +824,12 @@ if(is_null($result))
 	else
 	if(isset($req) && $req->fault)
 		$message = ($req->faultString==='') ? "Warning: the XMLRPC call failed." : $req->faultString;
-	CachedEcho::send($message,"text/html");
+	// faultString is rtorrent's own words, and several of its refusals name the
+	// argument of the command they refuse -- which, for a command parameter of
+	// d.multicall, is the caller's text. Every consumer of this body reads it as
+	// a sentence, so it is sent as one: declared text, and escaped the way the
+	// refusal above is.
+	CachedEcho::send(htmlspecialchars($message,ENT_QUOTES,"UTF-8"),"text/plain");
 }
 else
 	CachedEcho::send(JSON::safeEncode($result),"application/json");
