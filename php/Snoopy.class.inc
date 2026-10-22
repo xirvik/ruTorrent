@@ -843,6 +843,16 @@ class Snoopy
 		if(($interimResponses > 0 && $this->response_code === '')
 			|| ((int)$this->status >= 100 && (int)$this->status < 200 && (int)$this->status !== 101))
 			return $this->refuseRequest('missing-final-response');
+		// RFC 9112 section 4: the first line of a response is its status line.
+		// A reply carrying none is an HTTP/0.9 body, where the response was
+		// the body and nothing else, or a 1.x reply cut off before its
+		// start-line arrived -- the same bytes either way, so the two cannot
+		// be told apart. This client sends HTTP/1.0 request lines and never an
+		// HTTP/0.9 request, so it has no 0.9 answer to expect, and a port
+		// answering with something that is not HTTP arrives here as well. The
+		// curl transport turns the same replies down.
+		if($this->response_code === '')
+			return $this->refuseRequest('no-status-line');
 
 		$results = "";
 		$limit = $this->responseLimit();

@@ -85,7 +85,11 @@ $cases = array(
     // Every byte of a header block that ends without its blank line has to be
     // accounted for in $headers, whatever the last line says.
     'a last header line of zero is kept' => array("HTTP/1.0 200 OK\r\nX-A: 1\r\n0", '200', ''),
-    'a last header line of zero with nothing before it is kept' => array('0', 0, ''),
+    // The same line with no status line before it is not a header block at
+    // all: a reply carrying no status line is not a response, so the line is
+    // read and then discarded with the rest of it (SnoopyStatusLineTest).
+    'a last header line of zero with no status line is refused' => array(
+        '0', Snoopy::RESPONSE_BODY_FAILED, '', true),
     'a last header line of one is kept' => array("HTTP/1.0 200 OK\r\nX-A: 1\r\n1", '200', ''),
     'a zero line inside a complete header block is kept' => array(
         "HTTP/1.0 200 OK\r\n0\r\nX-A: 1\r\n\r\nbody", '200', 'body'),
@@ -94,16 +98,21 @@ foreach ($cases as $name => $case) {
     try {
         list($bytes, $status, $body) = $case;
         $seen = snoopyHeaderLineResponse($bytes);
-        // The header block is everything up to the blank line, which ends the
-        // block and is not one of its lines.
-        $block = explode("\r\n\r\n", $bytes, 2);
-        $expected = array('fetched' => true, 'status' => $status,
-            'headers' => $block[0] === '' ? array() : explode("\r\n", $block[0]), 'body' => $body);
-        foreach ($expected['headers'] as $line => $text) {
-            // explode() drops the terminator fgets() keeps, except on the last
-            // line of a block that has none.
-            if (($line + 1) < count($expected['headers']) || isset($block[1]))
-                $expected['headers'][$line] = $text . "\r\n";
+        if (isset($case[3]) && $case[3]) {
+            $expected = array('fetched' => false, 'status' => $status,
+                'headers' => array(), 'body' => $body);
+        } else {
+            // The header block is everything up to the blank line, which ends
+            // the block and is not one of its lines.
+            $block = explode("\r\n\r\n", $bytes, 2);
+            $expected = array('fetched' => true, 'status' => $status,
+                'headers' => $block[0] === '' ? array() : explode("\r\n", $block[0]), 'body' => $body);
+            foreach ($expected['headers'] as $line => $text) {
+                // explode() drops the terminator fgets() keeps, except on the
+                // last line of a block that has none.
+                if (($line + 1) < count($expected['headers']) || isset($block[1]))
+                    $expected['headers'][$line] = $text . "\r\n";
+            }
         }
         if ($seen !== $expected)
             throw new RuntimeException('expected ' . json_encode($expected) . ', got ' . json_encode($seen));
