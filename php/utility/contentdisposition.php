@@ -9,7 +9,7 @@ class ContentDisposition
 {
 	public static function attachment( $name, $userAgent = null )
 	{
-		$name = (string)$name;
+		$name = self::oneName((string)$name);
 		if(is_string($userAgent) && (strpos($userAgent,'MSIE')!==false))
 			$fallback = rawurlencode($name);
 		else
@@ -19,5 +19,20 @@ class ContentDisposition
 		if(preg_match('//u', $name) === 1)
 			$value .= "; filename*=UTF-8''".rawurlencode($name);
 		return($value);
+	}
+
+	/**
+	 * The name as one directory entry. RFC 6266 names a file and not a path,
+	 * and the RFC 8187 form would carry a separator percent-encoded rather
+	 * than removed, so the path has to go before either form is built. A
+	 * backslash is left alone: it is an ordinary character in the names this
+	 * receives, and the fallback quotes it as a quoted-pair.
+	 */
+	private static function oneName( $name )
+	{
+		$cut = strrpos($name,'/');
+		if($cut !== false)
+			$name = substr($name,$cut+1);
+		return((($name==='') || ($name==='.') || ($name==='..')) ? '_' : $name);
 	}
 }

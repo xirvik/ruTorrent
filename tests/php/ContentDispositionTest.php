@@ -190,4 +190,46 @@ class ContentDispositionTest extends TestCase
 			ContentDisposition::attachment('a"b', 'Mozilla/4.0 (compatible; MSIE 8.0)'),
 			'an old MSIE still gets the percent-encoded filename it decodes');
 	}
+
+	/**
+	 * A download name is one directory entry. Both forms are asked: the RFC
+	 * 8187 filename* carries a separator percent-encoded rather than removed,
+	 * so a name stripped in the quoted fallback alone still offers the path.
+	 */
+	public function testNoDownloadNameOffersAPath()
+	{
+		require_once(__DIR__ . '/../../php/utility/contentdisposition.php');
+		$cases = array(
+			'../../../../etc/passwd.png' => 'passwd.png',
+			'/etc/shadow' => 'shadow',
+			'a/b/c.torrent' => 'c.torrent',
+			'plain.torrent' => 'plain.torrent',
+			"\u{0424}\u{0438}\u{043b}\u{044c}\u{043c}/x.mkv" => 'x.mkv',
+		);
+		foreach($cases as $name => $expected)
+		{
+			foreach(array(null, 'Mozilla/4.0 (compatible; MSIE 8.0)') as $userAgent)
+			{
+				$value = ContentDisposition::attachment($name, $userAgent);
+				$this->assertTrue(self::wellFormed($value),
+					'well-formed for ' . json_encode($name) . ': ' . $value);
+				$this->same($expected, self::chosenName($value),
+					'one entry for ' . json_encode($name) . ' as ' . json_encode($userAgent));
+				$this->assertTrue(preg_match('|/|', rawurldecode($value)) === 0,
+					'no separator survives either form of ' . json_encode($name) . ': ' . $value);
+			}
+		}
+	}
+
+	public function testTheSenderOffersOneEntryForAPathItIsAskedFor()
+	{
+		$name = '../../../../etc/passwd.png';
+		$paths = array('/file?name=' . rawurlencode($name), '/torrent?name=' . rawurlencode($name));
+		foreach($this->served($paths) as $path => $value)
+		{
+			$this->assertTrue(self::wellFormed($value), $path . ' sends one well-formed disposition');
+			$this->same('passwd.png', self::chosenName($value),
+				$path . ' offers one directory entry: ' . var_export($value, true));
+		}
+	}
 }
