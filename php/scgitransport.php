@@ -13,6 +13,12 @@ class rSCGITransport
 	// Cap for both timeouts: PHP 7.4/8.1 turn the connect timeout into signed
 	// 32-bit milliseconds, which wrap above this many seconds.
 	const MAX_TRANSFER_TIMEOUT = 2147483;
+	// The largest figure a timeout setting can mean. PHP's own socket budget,
+	// default_socket_timeout, is 60 seconds by default, and an hour carries
+	// MAX_RESPONSE_BYTES at 29 KiB/s, so no exchange with the daemon needs
+	// longer. A larger figure is a mistyped unit, and under
+	// MAX_TRANSFER_TIMEOUT it would derive a budget of days.
+	const MAX_CONFIGURED_TIMEOUT = 3600;
 	// rtorrent itself never sends a larger response body: 0.9.8's
 	// SCgiTask::receive_write() and current master's max_response_size
 	// (scgi_task.h) both stop at 100 << 20 bytes. It is also the default
@@ -49,9 +55,10 @@ class rSCGITransport
 	public static function sendConfigured($payload, $trusted, $options = array(), &$failure = null, &$connectError = null)
 	{
 		global $scgi_host, $scgi_port, $rpcTimeOut, $rpcTransferTimeOut, $rpcMaxResponseBytes, $tempDirectory;
+		list($connectTimeout, $transferTimeout) = static::configuredTimeouts($rpcTimeOut, $rpcTransferTimeOut);
 		return static::send($scgi_host, $scgi_port, $payload, $trusted, $options + array(
-			'connectTimeout' => $rpcTimeOut,
-			'transferTimeout' => $rpcTransferTimeOut,
+			'connectTimeout' => $connectTimeout,
+			'transferTimeout' => $transferTimeout,
 			'maxResponseBytes' => $rpcMaxResponseBytes,
 			'temporaryDirectory' => $tempDirectory,
 		), $failure, $connectError);
@@ -133,10 +140,28 @@ class rSCGITransport
 		return array($connect, $transfer);
 	}
 
-	/** A timeout setting that means what it says: null or finite positive seconds. */
+	/**
+	 * The budgets the configuration asks for. A setting beyond
+	 * MAX_CONFIGURED_TIMEOUT means nothing it can have meant, so it is
+	 * ignored exactly as an unusable one is -- the connect timeout becomes 30
+	 * seconds and the transfer budget the one null gives -- and env_check
+	 * reports it. timeouts() keeps its wider cap for the options an in-tree
+	 * caller passes, which are not an operator's typing.
+	 */
+	public static function configuredTimeouts($connectTimeout, $transferTimeout)
+	{
+		return self::timeouts(self::isValidTimeout($connectTimeout) ? $connectTimeout : null,
+			self::isValidTimeout($transferTimeout) ? $transferTimeout : null);
+	}
+
+	/**
+	 * A timeout setting that means what it says: null, or finite positive
+	 * seconds up to MAX_CONFIGURED_TIMEOUT.
+	 */
 	public static function isValidTimeout($value)
 	{
-		return ($value === null) || (self::seconds($value) !== null);
+		$seconds = self::seconds($value);
+		return ($value === null) || (($seconds !== null) && ($seconds <= self::MAX_CONFIGURED_TIMEOUT));
 	}
 
 	public static function isValidResponseLimit($value)
@@ -153,7 +178,7 @@ class rSCGITransport
 		global $rpcTimeOut, $rpcTransferTimeOut;
 		if(($failure !== 'read-timeout') && ($failure !== 'write-timeout'))
 			return $failure;
-		list(, $transfer) = self::timeouts($rpcTimeOut, $rpcTransferTimeOut);
+		list(, $transfer) = self::configuredTimeouts($rpcTimeOut, $rpcTransferTimeOut);
 		return $failure.' after the '.$transfer.'-second transfer budget; raise $rpcTransferTimeOut for slower replies';
 	}
 

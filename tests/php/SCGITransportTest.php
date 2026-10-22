@@ -701,6 +701,11 @@ class SCGITransportTest extends TestCase
 			foreach(array('read-timeout', 'write-timeout') as $failure)
 				$this->assertEquals($failure.' after the 90-second transfer budget; raise $rpcTransferTimeOut for slower replies',
 					rSCGITransport::describeFailure($failure), 'a longer connect timeout is the budget null gives');
+			$GLOBALS['rpcTimeOut'] = 3000000;
+			$this->assertEquals('read-timeout after the 60-second transfer budget; raise $rpcTransferTimeOut for slower replies',
+				rSCGITransport::describeFailure('read-timeout'),
+				'an implausible connect timeout names the budget in use, not one of days');
+			$GLOBALS['rpcTimeOut'] = 90;
 			$GLOBALS['rpcTransferTimeOut'] = 7.5;
 			$this->assertEquals('read-timeout after the 7.5-second transfer budget; raise $rpcTransferTimeOut for slower replies',
 				rSCGITransport::describeFailure('read-timeout'), 'a configured budget is named as it is used');
@@ -721,7 +726,8 @@ class SCGITransportTest extends TestCase
 		{
 			$GLOBALS['scgi_host'] = '127.0.0.1';
 			$GLOBALS['scgi_port'] = 1;
-			foreach(array(array(5, 5.0), array('2.5', 2.5), array(0, 30.0), array('5s', 30.0), array(null, 30.0)) as $case)
+			foreach(array(array(5, 5.0), array('2.5', 2.5), array(0, 30.0), array('5s', 30.0), array(null, 30.0),
+				array(3600, 3600.0), array(3601, 30.0), array(3000000, 30.0)) as $case)
 			{
 				$GLOBALS['rpcTimeOut'] = $case[0];
 				SCGITransportNoConnect::$timeout = null;
@@ -732,6 +738,36 @@ class SCGITransportTest extends TestCase
 			}
 		}
 		finally { $globals->restore(); }
+	}
+
+	public function testConfiguredTimeoutSettingsIgnoreAnImplausibleFigure()
+	{
+		$previous = ini_get('default_socket_timeout');
+		$ceiling = (float)rSCGITransport::MAX_CONFIGURED_TIMEOUT;
+		try
+		{
+			ini_set('default_socket_timeout', '60');
+			$cases = array(
+				// connect, transfer => connect, transfer
+				array(3000000, null, 30.0, 60.0, 'a connect timeout beyond the ceiling means 30 seconds, not days'),
+				array(5, 3000000, 5.0, 60.0, 'a transfer budget beyond the ceiling means the budget null gives'),
+				array($ceiling, $ceiling, $ceiling, $ceiling, 'the ceiling itself is a usable setting'),
+				array($ceiling + 1, $ceiling + 1, 30.0, 60.0, 'one second beyond the ceiling is not'),
+			);
+			foreach($cases as $case)
+			{
+				$resolved = rSCGITransport::configuredTimeouts($case[0], $case[1]);
+				$this->assertTrue($resolved === array($case[2], $case[3]), $case[4].': '.var_export($resolved, true));
+				foreach(array($case[0], $case[1]) as $setting)
+					$this->assertEquals(($setting === null) || ($setting <= $ceiling),
+						rSCGITransport::isValidTimeout($setting),
+						'isValidTimeout agrees with the budget the setting resolves to: '.var_export($setting, true));
+			}
+			$this->assertTrue(rSCGITransport::timeouts(1e19, 1e19)
+				=== array((float)rSCGITransport::MAX_TRANSFER_TIMEOUT, (float)rSCGITransport::MAX_TRANSFER_TIMEOUT),
+				'a timeout an in-tree caller passes as an option keeps the portable 32-bit cap');
+		}
+		finally { ini_set('default_socket_timeout', $previous); }
 	}
 
 	public function testTimeoutSettingsResolveByOneRule()

@@ -50,6 +50,23 @@ class EnvCheckSCGITransportTest extends TestCase
 		$this->assertTrue(strpos($result['output'], 'invalid value') === false, 'usable settings are not reported');
 	}
 
+	public function testATimeoutBeyondThePlausibleCeilingIsReported()
+	{
+		$result = $this->checkEnvironment(null, null, '', '$rpcTimeOut=3000000;');
+		$this->assertTrue(preg_match('/\\$rpcTimeOut +invalid value 3000000; using 30 seconds/', $result['output']) === 1,
+			'a connect timeout of 3000000 is reported like any other the transport cannot use: '.$result['output']);
+		$this->assertTrue(strpos($result['output'], 'at most 3600') !== false,
+			'the diagnostic names the largest figure a timeout setting may hold');
+		$this->assertTrue(strpos($result['output'], 'the WebUI waits up to 30)') !== false,
+			'the probe names the budget the WebUI will use, not the figure the setting holds: '.$result['output']);
+		$result = $this->checkEnvironment(null, null, '', '$rpcTransferTimeOut=3000000;');
+		$this->assertTrue(preg_match('/\\$rpcTransferTimeOut +invalid value 3000000; using 60 seconds, as for null/', $result['output']) === 1,
+			'a transfer budget of 3000000 is reported with the budget null gives: '.$result['output']);
+		$result = $this->checkEnvironment(null, null, '', '$rpcTimeOut=3600;$rpcTransferTimeOut=3600;');
+		$this->assertTrue(strpos($result['output'], 'invalid value') === false,
+			'the ceiling itself is not reported');
+	}
+
 	public function testABusyDaemonIsNotReportedAsUnreachable()
 	{
 		$body = '<methodResponse><params><param><value><string>0.16.26</string></value></param></params></methodResponse>';

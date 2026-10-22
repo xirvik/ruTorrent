@@ -314,13 +314,15 @@ if ($cfg === null) {
 			.'; using 104857600 bytes (100 MiB). Set an integer from 1 to 104857600.');
 	}
 	if(class_exists('rSCGITransport')) {
-		list($connect, $transfer) = rSCGITransport::timeouts($cfg['connect'], $cfg['transfer']);
+		list($connect, $transfer) = rSCGITransport::configuredTimeouts($cfg['connect'], $cfg['transfer']);
+		$ceiling = rSCGITransport::MAX_CONFIGURED_TIMEOUT;
 		if(!rSCGITransport::isValidTimeout($cfg['connect']))
 			check('config', false, '$rpcTimeOut', 'invalid value '.var_export($cfg['connect'], true)
-				.'; using 30 seconds. Set a positive number of seconds.');
+				.'; using 30 seconds. Set a positive number of seconds, at most '.$ceiling.'.');
 		if(!rSCGITransport::isValidTimeout($cfg['transfer']))
 			check('config', false, '$rpcTransferTimeOut', 'invalid value '.var_export($cfg['transfer'], true)
-				.'; using '.$transfer.' seconds, as for null. Set null or a positive number of seconds.');
+				.'; using '.$transfer.' seconds, as for null. Set null or a positive number of seconds, at most '
+				.$ceiling.'.');
 	}
 	if ($cfg['topdir'] !== null) {
 		$ok = Requirements::looksAbsolute($cfg['topdir']) && @is_dir($cfg['topdir']) && @is_readable($cfg['topdir']);
@@ -401,7 +403,7 @@ function scgi_params($params) {
 if (!defined('ENV_CHECK_PROBE_SECONDS')) define('ENV_CHECK_PROBE_SECONDS', 10);
 function probe_budgets() {
 	global $cfg;
-	list($connect, $transfer) = rSCGITransport::timeouts($cfg['connect'], $cfg['transfer']);
+	list($connect, $transfer) = rSCGITransport::configuredTimeouts($cfg['connect'], $cfg['transfer']);
 	return array(min($connect, (float)ENV_CHECK_PROBE_SECONDS), min($transfer, (float)ENV_CHECK_PROBE_SECONDS), $transfer, $connect);
 }
 function scgi_call($host, $port, $methodName, $params = array(), $asList = false, &$failure = null) {
