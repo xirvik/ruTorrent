@@ -96,7 +96,10 @@ class FileUtil
 		{
 			$ret.=('/users/'.$user);
 			if(!is_dir($ret))
-				self::makeDirectory( array($ret,$ret.'/settings',$ret.'/torrents',$ret.'/tmp') );
+			{
+				self::makeDirectory( array($ret,$ret.'/settings',$ret.'/torrents') );
+				self::makeDirectory( $ret.'/tmp', self::temporaryDirectoryMode() );
+			}
 		}
 		return $ret;
 	}
@@ -212,19 +215,34 @@ class FileUtil
 				if(empty($tempDirectory))
 				{
 					$tempDirectory = self::getProfilePath().'/tmp';
-					self::makeDirectory($tempDirectory, null, true);
+					self::makeDirectory($tempDirectory, self::temporaryDirectoryMode(), true);
 				}
 			}
 			else
 			{
 				// User provided: an existing directory may have a protected mode.
-				self::makeDirectory($tempDirectory, null, true);
+				self::makeDirectory($tempDirectory, self::temporaryDirectoryMode(), true);
 			}
 			// Make sure that temp dir always have trail slash.
 			$tempDirectory = self::addslash( $tempDirectory );
 			$tempDirectory_init_done = true;
 		}
 		return($tempDirectory);
+	}
+
+	/**
+	 * The mode a temporary directory is created with: $profileMask, the mode
+	 * declared for profile data, plus the sticky bit whenever that mask lets
+	 * anyone but the owner write. Without it any such user may rename or
+	 * delete the files ruTorrent leaves in the directory, which is what /tmp
+	 * is 1777 for; the files themselves still need the mask, because rTorrent
+	 * may run as another user and has to read what it is handed.
+	 */
+	private static function temporaryDirectoryMode()
+	{
+		global $profileMask;
+		$mode = isset($profileMask) ? $profileMask : 0777;
+		return(($mode & 0022) ? ($mode | 01000) : $mode);
 	}
 
 	public static function getTempFilename($purpose = '', $extension = null)

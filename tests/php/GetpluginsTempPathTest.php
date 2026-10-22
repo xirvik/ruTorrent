@@ -130,6 +130,28 @@ class GetpluginsTempPathTest extends TestCase
 			'a world-writable temp directory without the sticky bit is reported');
 	}
 
+	/**
+	 * A configured temp directory that is missing is created on the spot, so
+	 * the run that creates it decides what the next one sees. At the default
+	 * $profileMask of 0777 that used to be a directory this very check then
+	 * reported.
+	 */
+	public function testATempDirectoryTheScriptCreatesIsNotReported()
+	{
+		$harness = $this->harness('created');
+		$temp = $harness->directory('parent', 0700).'/temp';
+		$output = $harness->run(array('RU_TEMP_DIRECTORY' => $temp, 'RU_PROFILE_MASK' => '0777'));
+		clearstatcache(true, $temp);
+		$this->assertTrue(is_dir($temp),
+			'the script created the configured temp directory it did not find');
+		$this->assertEquals(01777, fileperms($temp) & 07777,
+			'and created it sticky rather than world-writable without the sticky bit');
+		$this->assertTrue(!GetpluginsHarness::reported($output, 'worldWritableTempPath'),
+			'so creating it reports nothing: '.implode(',', GetpluginsHarness::diagnostics($output)));
+		$this->assertTrue(!GetpluginsHarness::reported($output, 'badTempPath'),
+			'and the directory it created is one it can use');
+	}
+
 	public function testATempDirectoryOnlyItsOwnerCanWriteIsNotReported()
 	{
 		$harness = $this->harness('narrow');
