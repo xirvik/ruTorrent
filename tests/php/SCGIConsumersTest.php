@@ -71,6 +71,31 @@ class SCGIConsumersTest extends TestCase
 		}
 	}
 
+	/**
+	 * A response limit the transport cannot use falls back to the daemon's
+	 * own ceiling, which env_check reports and the request does not: the
+	 * consumer every page load goes through has to complete regardless.
+	 */
+	public function testCoreToleratesAResponseLimitItCannotUse()
+	{
+		$frame = "Status: 200 OK\r\nContent-Length: 2\r\n\r\nok";
+		foreach(array(104857601, 1e8, '64M', 0, '') as $setting)
+		{
+			$peer = SCGITransportFixture::start($frame);
+			try
+			{
+				$this->usePeer($peer, 3, 3);
+				$GLOBALS['rpcMaxResponseBytes'] = $setting;
+				$failure = null;
+				$this->assertTrue(rXMLRPCRequest::send('<request/>', true, $failure) === $frame,
+					'$rpcMaxResponseBytes = '.var_export($setting, true).' still lets a request complete');
+				$this->assertTrue($failure === null,
+					'$rpcMaxResponseBytes = '.var_export($setting, true).' classifies no failure');
+			}
+			finally { $peer->close(); }
+		}
+	}
+
 	public function testCoreForwardsTheCallersTrustToTheScgiHeader()
 	{
 		foreach(array(true, false) as $trusted)
