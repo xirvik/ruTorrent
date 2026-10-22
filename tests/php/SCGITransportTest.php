@@ -1763,6 +1763,35 @@ class SCGITransportTest extends TestCase
 		finally { $peer->close(); }
 	}
 
+	public function testCopiedRealRpc2SaysItCollectedAResponseInMemory()
+	{
+		$length = rSCGITransport::MEMORY_RESPONSE_BYTES + 37;
+		$wide = sys_get_temp_dir().'/rutorrent-scgi-rpc2-wide-'.uniqid('', true);
+		$mask = umask(0);
+		mkdir($wide, 0777);
+		umask($mask);
+		clearstatcache(true, $wide);
+		$peer = SCGITransportFixture::startRepeatedBody($length);
+		try
+		{
+			$this->assertEquals(0777, fileperms($wide) & 07777,
+				'the endpoint is pointed at a world-writable directory with no sticky bit');
+			$result = $this->runCopiedRpc2($peer->host(), (string)$peer->port(), $this->allowedXml(),
+				array('connect' => 3, 'transfer' => 10, 'temp' => $wide));
+			$this->assertEquals($length, strlen($result['body']),
+				'the endpoint returns the whole response it had to hold in memory');
+			$this->assertEquals(1, substr_count($result['rpcLog'], 'collected in memory'),
+				'and logs once that it held it there: '.$result['rpcLog']);
+			$this->assertTrue(strpos($result['rpcLog'], $wide) !== false,
+				'naming the directory it could not spill to: '.$result['rpcLog']);
+		}
+		finally
+		{
+			$peer->close();
+			TestTree::remove($wide);
+		}
+	}
+
 	public function testCopiedRealRpc2ConnectFailureKeepsItsHintAndConnectorError()
 	{
 		$host = 'unix://'.sys_get_temp_dir().'/missing-rpc2-'.uniqid().'.sock';
@@ -1962,6 +1991,8 @@ PHP;
 				$config .= "\$rpcTransferTimeOut = ".var_export(isset($options['transfer']) ? $options['transfer'] : 0.2, true).";\n";
 				$config .= "\$rpcMaxResponseBytes = ".var_export(isset($options['max']) ? $options['max'] : 104857600, true).";\n";
 			}
+			if(isset($options['temp']))
+				$config .= "\$tempDirectory = ".var_export($options['temp'], true).";\n";
 			file_put_contents($tree.'/conf/config.php', $config);
 			$prepend = "<?php\n\$_SERVER['RUTORRENT_XMLRPC_ENDPOINT'] = 'on';\n";
 			file_put_contents($tree.'/prepend.php', $prepend);

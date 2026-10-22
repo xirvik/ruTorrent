@@ -114,8 +114,11 @@ function rpc2_fault($status, $message)
 function rpc2_send($payload, $trusted)
 {
 	global $scgi_host;
+	$notice = null;
 	$result = rSCGITransport::sendConfigured($payload, $trusted,
-		array('responseMode' => rSCGITransport::RESPONSE_BODY), $failure, $error);
+		array('responseMode' => rSCGITransport::RESPONSE_BODY), $failure, $error, $notice);
+	if($notice !== null)
+		rpc2_log($notice);
 	if($result === null)
 	{
 		rpc2_log(($failure === 'connect-failed') ? 'cannot reach rtorrent at '.$scgi_host.': '.$error

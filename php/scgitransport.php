@@ -36,6 +36,11 @@ class rSCGITransport
 	const OPTIONS = array('connectTimeout' => true, 'transferTimeout' => true, 'maxResponseBytes' => true,
 		'responseMode' => true, 'temporaryDirectory' => true);
 
+	// A response with nowhere to spill will have nowhere to spill for every
+	// later one too, so the caller is given the line once and a large
+	// response does not cost a line each time.
+	private static $memoryCollected = false;
+
 	public static function requiredFunctions()
 	{
 		return array('stream_socket_client', 'stream_set_blocking',
@@ -52,7 +57,8 @@ class rSCGITransport
 	 * One exchange with the configured daemon. $options override the
 	 * configuration; see send() for their names.
 	 */
-	public static function sendConfigured($payload, $trusted, $options = array(), &$failure = null, &$connectError = null)
+	public static function sendConfigured($payload, $trusted, $options = array(), &$failure = null,
+		&$connectError = null, &$notice = null)
 	{
 		global $scgi_host, $scgi_port, $rpcTimeOut, $rpcTransferTimeOut, $rpcMaxResponseBytes, $tempDirectory;
 		list($connectTimeout, $transferTimeout) = static::configuredTimeouts($rpcTimeOut, $rpcTransferTimeOut);
@@ -61,17 +67,19 @@ class rSCGITransport
 			'transferTimeout' => $transferTimeout,
 			'maxResponseBytes' => $rpcMaxResponseBytes,
 			'temporaryDirectory' => $tempDirectory,
-		), $failure, $connectError);
+		), $failure, $connectError, $notice);
 	}
 
 	/**
 	 * $options: 'connectTimeout' and 'transferTimeout' in seconds (see
 	 * timeouts()), 'maxResponseBytes', 'responseMode' (RESPONSE_RAW by
 	 * default) and 'temporaryDirectory' for a response above 1 MiB. Returns
-	 * the response, or null with a classified $failure.
+	 * the response, or null with a classified $failure. $notice carries one
+	 * line about the exchange for the caller to log; see
+	 * noteMemoryCollection().
 	 */
 	public static function send($host, $port, $payload, $trusted = true, $options = array(),
-		&$failure = null, &$connectError = null)
+		&$failure = null, &$connectError = null, &$notice = null)
 	{
 		$failure = null;
 		$connectError = null;
@@ -114,7 +122,7 @@ class rSCGITransport
 			if(!self::writeAll($socket, $prefix, $payload, $deadline, $failure))
 				return null;
 			return self::readResponse($socket, $limit, $responseMode, $failure, $deadline,
-				$options['temporaryDirectory'] ?? null);
+				$options['temporaryDirectory'] ?? null, $notice);
 		}
 		finally
 		{
@@ -180,6 +188,23 @@ class rSCGITransport
 			return $failure;
 		list(, $transfer) = self::configuredTimeouts($rpcTimeOut, $rpcTransferTimeOut);
 		return $failure.' after the '.$transfer.'-second transfer budget; raise $rpcTransferTimeOut for slower replies';
+	}
+
+	/**
+	 * A response that had to be collected in memory because there was no
+	 * temporary file to collect it in: up to the configured ceiling of
+	 * memory where disk was meant to be used, which the caller logs. Only a
+	 * response that needed the file reports, and only the first one does.
+	 */
+	private static function noteMemoryCollection($declared, $directory, &$notice)
+	{
+		if(self::$memoryCollected)
+			return;
+		self::$memoryCollected = true;
+		$where = (is_string($directory) && ($directory !== '')) ? $directory : 'the system temporary directory';
+		$notice = 'a '.$declared.'-byte response was collected in memory: '.$where
+			.' cannot hold the spill file, which needs a writable directory, sticky if it is'
+			.' world-writable (logged once per process)';
 	}
 
 	private static function fail(&$failure, $code)
@@ -365,7 +390,8 @@ class rSCGITransport
 			static::sleep($seconds);
 	}
 
-	private static function readResponse($socket, $limit, $responseMode, &$failure, $deadline, $temporaryDirectory)
+	private static function readResponse($socket, $limit, $responseMode, &$failure, $deadline,
+		$temporaryDirectory, &$notice = null)
 	{
 		$received = '';
 		while(($delimiter = strpos($received, "\r\n\r\n")) === false)
@@ -391,7 +417,11 @@ class rSCGITransport
 		// temporary file it is collected in memory.
 		$file = ($declared > self::MEMORY_RESPONSE_BYTES) ? static::openTemporary($temporaryDirectory) : false;
 		if(!is_resource($file))
+		{
 			$file = false;
+			if($declared > self::MEMORY_RESPONSE_BYTES)
+				self::noteMemoryCollection($declared, $temporaryDirectory, $notice);
+		}
 		$stored = 0;
 		$memory = '';
 		try

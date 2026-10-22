@@ -25,8 +25,17 @@ class SCGIConsumersTest extends TestCase
 
 	public function tearDown()
 	{
-		foreach(glob($this->base . '/*') as $file)
-			@unlink($file);
+		foreach(glob($this->base . '/*') as $path)
+		{
+			if(is_dir($path))
+			{
+				foreach(glob($path . '/*') as $entry)
+					@unlink($entry);
+				@rmdir($path);
+			}
+			else
+				@unlink($path);
+		}
 		@rmdir($this->base);
 		$this->previousGlobals->restore();
 	}
@@ -113,6 +122,77 @@ class SCGIConsumersTest extends TestCase
 			}
 			finally { $peer->close(); }
 		}
+	}
+
+	/**
+	 * A directory the transport will not spill to -- world-writable with no
+	 * sticky bit, so any user on the box may replace a name in it -- costs a
+	 * large response its memory instead. That is worth one line: a line per
+	 * large response would be noise, and a line for a response that never
+	 * needed the file would be wrong.
+	 */
+	public function testAResponseCollectedInMemoryIsSaidOnce()
+	{
+		$wide = $this->directory('wide', 0777);
+		$length = rSCGITransport::MEMORY_RESPONSE_BYTES + 37;
+		$GLOBALS['tempDirectory'] = $wide;
+		$GLOBALS['tempDirectory_init_done'] = false;
+		$this->exchange("Status: 200 OK\r\nContent-Length: 2\r\n\r\nok", 2);
+		$this->assertEquals('', $this->log(),
+			'a response small enough to hold in memory says nothing about a directory it never needed');
+
+		$GLOBALS['tempDirectory'] = $this->directory('narrow', 0700);
+		$GLOBALS['tempDirectory_init_done'] = false;
+		$this->exchange(null, $length);
+		$this->assertEquals('', $this->log(),
+			'a large response that spills to a usable directory says nothing: '.$this->log());
+
+		$GLOBALS['tempDirectory'] = $wide;
+		$GLOBALS['tempDirectory_init_done'] = false;
+		$this->exchange(null, $length);
+		$this->exchange(null, $length);
+		$log = $this->log();
+		$this->assertEquals(1, substr_count($log, 'collected in memory'),
+			'two large responses with nowhere to spill are reported once: '.$log);
+		$this->assertTrue(strpos($log, $wide) !== false,
+			'the line names the directory that could not hold the spill file: '.$log);
+		$this->assertTrue(strpos($log, 'sticky') !== false,
+			'and says what such a directory needs: '.$log);
+	}
+
+	/** A directory inside the test's own tree, at exactly $mode. */
+	private function directory($name, $mode)
+	{
+		$path = $this->base.'/'.$name;
+		$mask = umask(0);
+		mkdir($path, $mode);
+		umask($mask);
+		clearstatcache(true, $path);
+		$this->assertEquals($mode, fileperms($path) & 07777,
+			'the fixture directory is created at exactly the mode the case needs');
+		return $path;
+	}
+
+	private function log()
+	{
+		clearstatcache(true, $GLOBALS['log_file']);
+		return is_file($GLOBALS['log_file']) ? file_get_contents($GLOBALS['log_file']) : '';
+	}
+
+	/** One exchange whose response is $frame, or $length repeated body bytes. */
+	private function exchange($frame, $length)
+	{
+		$peer = ($frame === null) ? SCGITransportFixture::startRepeatedBody($length)
+			: SCGITransportFixture::start($frame);
+		try
+		{
+			$this->usePeer($peer, 3, 10);
+			$failure = null;
+			$result = rXMLRPCRequest::send('<request/>', true, $failure, rSCGITransport::RESPONSE_BODY);
+			$this->assertTrue(is_string($result) && (strlen($result) === $length) && ($failure === null),
+				'the exchange completes and returns all '.$length.' body bytes');
+		}
+		finally { $peer->close(); }
 	}
 
 	public function testCoreForwardsBodyModeWithoutDaemonHeaders()

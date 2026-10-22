@@ -156,8 +156,12 @@ class rXMLRPCRequest
 		global $rpcLogCalls;
 		if($rpcLogCalls)
 			FileUtil::toLog($data);
+		$notice = null;
+		$connectError = null;
 		$result = rSCGITransport::sendConfigured($data, $trusted, array('responseMode' => $responseMode,
-			'temporaryDirectory' => FileUtil::getTempDirectory()), $failure);
+			'temporaryDirectory' => FileUtil::getTempDirectory()), $failure, $connectError, $notice);
+		if($notice !== null)
+			FileUtil::toLog('rXMLRPCRequest: '.$notice);
 		if($result === null)
 		{
 			// A stopped daemon would add a line on every WebUI poll, which
