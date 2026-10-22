@@ -52,6 +52,17 @@ class Snoopy
 	// A server sends one or two; each block is discarded when it ends, so only
 	// this count stops a peer that streams them without end.
 	const MAX_INTERIM_RESPONSES = 5;
+	// One answer's header section, over every block it carries: at most this
+	// many lines and this many bytes, whichever is reached first. Both are the
+	// ceilings current curl enforces for the same reply, so the two transports
+	// turn down the same answers. Each bounds a case the other does not: 300 KiB of
+	// two-byte lines is 150000 of them, and 5000 lines of $_maxlinelen is
+	// 20 MiB. What servers and proxies send sits far below either -- a response
+	// header section has to fit one nginx proxy_buffer_size, 4 or 8 KiB, and
+	// Apache allows 100 fields of 8190 bytes -- so neither bound can refuse an
+	// answer a real chain would carry.
+	const MAX_HEADER_LINES = 5000;
+	const MAX_HEADER_BYTES = 307200;
 
 	// Response cookies keep their scope separately from caller-supplied cookies.
 	const MAX_RESPONSE_COOKIES = 300;
@@ -736,6 +747,8 @@ class Snoopy
 		fwrite($fp,$headers.$body,strlen($headers.$body));
 		$is_gzipped = false;
 		$interimResponses = 0;
+		$headerLines = 0;
+		$headerBytes = 0;
 
 		while(($currentHeader = fgets($fp,$this->_maxlinelen)) !== false)
 		{
@@ -745,6 +758,15 @@ class Snoopy
 				$this->status=-100;
 				return false;
 			}
+
+			// A block boundary is the only thing that empties $headers, and a
+			// block carrying no boundary never reaches one, so the section is
+			// bounded here instead: every line of it counts, in every block of
+			// one answer, before anything is read out of it.
+			$headerLines++;
+			$headerBytes += strlen($currentHeader);
+			if($headerLines > self::MAX_HEADER_LINES || $headerBytes > self::MAX_HEADER_BYTES)
+				return $this->refuseRequest('oversized-header-section');
 
 			if(preg_match("/^\r?\n$/", $currentHeader))
 			{
