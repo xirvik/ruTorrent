@@ -894,8 +894,45 @@ class Snoopy
 		// (fetch with any method) get the method forwarded verbatim.
 		if(func_num_args() >= 4)
 			$cmdline_params .= " -X ".escapeshellarg(strtoupper($http_method));
-		foreach( $headers as $header )
-			$cmdline_params .= " -H ".escapeshellarg($header);
+		// A field value is opaque bytes: RFC 9110 5.5 gives it no encoding of
+		// its own and tells a recipient to treat anything above ASCII as
+		// opaque data, so there is nothing a transport may send in its place.
+		// escapeshellarg() keeps only the bytes that form a character in the
+		// process locale, so under C a cookie or an entity tag a server sent
+		// reaches curl short of those bytes, and percent-encoding -- what the
+		// url does -- would be a different value rather than the same one.
+		// curl reads one header per line out of a file, which the shell never
+		// sees. The file also keeps Cookie and Authorization out of the
+		// process table, where every argument is readable by anyone on the
+		// host. Nothing in it is read as an option: a line that is no header
+		// is discarded, so a value cannot become one.
+		$requestheaderfile = null;
+		if(count($headers))
+		{
+			foreach($headers as $header)
+				// One header per line is also what the file cannot carry: a
+				// CR, an LF or a NUL in a line ends it, and where it ends
+				// differs by curl version, so the same request would go out
+				// two ways. RFC 9110 5.5 excludes all three from a field value
+				// in any case. A field name is a token and "#" is a token
+				// character, which newer curl reads here as a comment and
+				// drops. Declining beats sending a request without a header
+				// that was asked for. The socket transport still writes such a
+				// value, and bounding it belongs where it is set.
+				if(substr($header,0,1) === "#" || strcspn($header,"\r\n\0") !== strlen($header))
+					return $this->refuseRequest('uncarriable-header');
+			$requestheaderfile = FileUtil::getTempFilename('https-request-headers');
+			$list = implode("\n",$headers)."\n";
+			$mask = umask(0177);
+			$written = @file_put_contents($requestheaderfile, $list);
+			umask($mask);
+			if($written !== strlen($list))
+			{
+				@unlink($requestheaderfile);
+				return $this->refuseRequest('request-headers-not-written');
+			}
+			$cmdline_params .= " -H ".escapeshellarg("@".$requestheaderfile);
+		}
 
 		$bodyfile = null;
 		if(strlen((string)$body) > 0)
@@ -917,6 +954,8 @@ class Snoopy
 			if($written !== strlen((string)$body))
 			{
 				@unlink($bodyfile);
+				if($requestheaderfile !== null)
+					@unlink($requestheaderfile);
 				return $this->refuseRequest('request-body-not-written');
 			}
 			$cmdline_params .= " --data-binary ".escapeshellarg("@".$bodyfile);
@@ -970,10 +1009,13 @@ class Snoopy
 		$url = substr($url, 0, $target).$encoded;
 
 		exec(escapeshellarg(Utility::getExternal('curl'))." -g -D ".escapeshellarg($headerfile)." -o ".escapeshellarg($contfile)." ".$cmdline_params." ".escapeshellarg($url),$results,$return);
-		// curl has read the body by now, and nothing below this line needs it,
-		// so the one copy of it on disk goes away before any return path.
+		// curl has read the headers and the body by now, and nothing below this
+		// line needs either, so the one copy of each on disk goes away before
+		// any return path.
 		if($bodyfile !== null)
 			@unlink($bodyfile);
+		if($requestheaderfile !== null)
+			@unlink($requestheaderfile);
 		$this->status = $return;
 		$is_gzipped = false;
 		if($return)

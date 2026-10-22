@@ -18,7 +18,16 @@ for ($i = 1; $i < $argc - 1; $i++) {
     if ($argv[$i] === '-D') $header = $argv[++$i];
     elseif ($argv[$i] === '-o') $body = $argv[++$i];
     elseif ($argv[$i] === '-X') $request['method'] = $argv[++$i];
-    elseif ($argv[$i] === '-H' && stripos($argv[$i + 1], 'Cookie:') === 0) $request['cookie'] = $argv[++$i];
+    elseif ($argv[$i] === '-H') {
+        // The headers reach curl in a file, one per line, named with a leading
+        // @, so none of them is on the command line to read directly.
+        $value = $argv[++$i];
+        $lines = (strncmp($value, '@', 1) === 0 && is_file(substr($value, 1)))
+            ? explode("\n", (string) file_get_contents(substr($value, 1)))
+            : array($value);
+        foreach ($lines as $line)
+            if (stripos($line, 'Cookie:') === 0) $request['cookie'] = rtrim($line, "\r\n");
+    }
 }
 $requests = unserialize(file_get_contents($root . '/requests'), array('allowed_classes' => false));
 $requests[] = $request;

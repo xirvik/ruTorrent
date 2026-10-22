@@ -167,7 +167,9 @@ $tests = array(
     // What the body is handed over as, observed from the other side: a
     // wrapper records the arguments curl is called with and the mode of any
     // file among them. A body on the command line is readable in the process
-    // table, and a body in a file every user can read is no better.
+    // table, and a body in a file every user can read is no better. The
+    // headers are handed over the same way, so more than one file can be among
+    // the arguments and the bound is on all of them rather than on a count.
     'the body is handed over as a file no other user can read' => function () {
         $directory = FileUtil::getTempDirectory();
         $record = $directory . 'binary-body-record-' . getmypid();
@@ -200,8 +202,8 @@ SH;
                 binaryBodyAssert(strpos($argument, 'password=s3cret') === false,
                     'No argument carries the body: ' . $argument);
             $modes = file_exists($record) ? explode("\n", trim(file_get_contents($record))) : array();
-            binaryBodyAssert($modes === array('600'),
-                'The body file is readable by its owner only: ' . implode(', ', $modes));
+            binaryBodyAssert($modes !== array() && array_unique($modes) === array('600'),
+                'Every file curl is given is readable by its owner only: ' . implode(', ', $modes));
         } finally {
             if ($previous === null) unset($GLOBALS['pathToExternals']['curl']);
             else $GLOBALS['pathToExternals']['curl'] = $previous;
