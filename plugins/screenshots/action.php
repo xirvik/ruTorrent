@@ -86,8 +86,12 @@ if(isset($_REQUEST['cmd']))
 		{
 			$dir = rTask::formatPath( $_REQUEST['no'] );
 			$ext = ($st->data['exformat'] ? '.png' : '.jpg');
-			$filename = ffmpegSettings::frameName( $dir, $_REQUEST['fno'], $st->data['exformat'] );
-			SendFile::send($filename, $st->data['exformat'] ? 'image/png' : 'image/jpeg', $_REQUEST['file']."-".str_pad($_REQUEST['fno']+1, 3, "0", STR_PAD_LEFT).$ext);
+			// The frame number is a request value and need not be a number at
+			// all. It becomes both a path component and part of the download
+			// name, so it is read as a number once, for both.
+			$no = intval(isset($_REQUEST['fno']) ? $_REQUEST['fno'] : 0);
+			$filename = ffmpegSettings::frameName( $dir, $no, $st->data['exformat'] );
+			SendFile::send($filename, $st->data['exformat'] ? 'image/png' : 'image/jpeg', $_REQUEST['file']."-".str_pad($no+1, 3, "0", STR_PAD_LEFT).$ext);
 			exit();
 		}
 		case "ffmpegset":
