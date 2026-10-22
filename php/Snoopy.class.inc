@@ -639,14 +639,17 @@ class Snoopy
 
 	// A reply the client could not take is not a response: none of it answers
 	// for the request it arrived on, and none of it is a source of cookies for
-	// the request after that one. $status is left to the caller, which says in
-	// its own terms what did not arrive.
+	// the request after that one. $status goes with the rest of it, so a
+	// request that assigns none of its own reports none rather than the status
+	// of the request before it; a caller that has one to report assigns it
+	// after, in its own terms.
 	protected function discardResponse()
 	{
 		$this->headers = array();
 		$this->response_code = "";
 		$this->results = "";
 		$this->_redirectaddr = false;
+		$this->status = 0;
 	}
 
 	// $maxlength as a byte count, which is what both paths bound against.
@@ -778,7 +781,6 @@ class Snoopy
 					if(++$interimResponses > self::MAX_INTERIM_RESPONSES)
 						return $this->refuseRequest('too-many-interim-responses');
 					$this->discardResponse();
-					$this->status = 0;
 					$is_gzipped = false;
 					continue;
 				}
@@ -1511,7 +1513,6 @@ class Snoopy
 		}
 		if(filter_var(trim($host,"[]"),FILTER_VALIDATE_IP,FILTER_FLAG_IPV6)!==false)
 			$host = "[".trim($host,"[]")."]";
-		$this->status = 0;
 		if(function_exists("stream_socket_client") && !is_null($this->IP))
 		{
 			$opts = array('socket' => array('bindto' => $this->IP.':0'));
