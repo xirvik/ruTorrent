@@ -19,6 +19,10 @@ class SendFile
 		if($stat && @LFS::is_file($filename) && @LFS::is_readable($filename))
 		{
 			$etag = sprintf('"%x-%x-%x"', $stat['ino'], $stat['size'], $stat['mtime'] * 1000000);
+			// Every answer below declares a type, so a browser has no reason to
+			// guess one. It matters most here: the saved name carries whatever
+			// extension the torrent gave the file, and no caller appends one.
+			header('X-Content-Type-Options: nosniff');
 			if( 	(isset($_SERVER['HTTP_IF_NONE_MATCH']) && $_SERVER['HTTP_IF_NONE_MATCH'] == $etag) ||
 							(isset($_SERVER['HTTP_IF_MODIFIED_SINCE']) && strtotime($_SERVER['HTTP_IF_MODIFIED_SINCE']) >= $stat['mtime']))
 				header('HTTP/1.0 304 Not Modified');
@@ -109,6 +113,7 @@ class SendFile
 	public static function sendCachedImage($location, $type, $duration)
 	{
 		header('Content-Type: '.$type);
+		header('X-Content-Type-Options: nosniff');
 		header('Cache-Control: max-age='.$duration);
 		header('HTTP/1.0 200 OK');
 		readfile($location);
