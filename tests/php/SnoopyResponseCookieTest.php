@@ -122,7 +122,20 @@ $headers = array();
 for ($i = 1; $i < $argc - 1; $i++) {
     if ($argv[$i] === '-D') $header = $argv[++$i];
     elseif ($argv[$i] === '-o') $body = $argv[++$i];
-    elseif ($argv[$i] === '-H') $headers[] = $argv[++$i];
+    elseif ($argv[$i] === '-H') {
+        $value = $argv[++$i];
+        // Snoopy hands curl the request headers in a file named with a leading
+        // @, one header per line, because escapeshellarg() drops the bytes of a
+        // field value that form no character in the process locale. The file is
+        // what the peer is sent, so it is what this double reads; a literal -H
+        // value is still read as itself.
+        if (substr($value, 0, 1) === '@') {
+            $list = @file_get_contents(substr($value, 1));
+            if (!is_string($list)) exit(98);
+            if ($list !== '')
+                foreach (explode("\n", rtrim($list, "\n")) as $line) $headers[] = $line;
+        } else $headers[] = $value;
+    }
 }
 $requests = unserialize(file_get_contents($root . '/requests'), array('allowed_classes' => false));
 $requests[] = implode("\r\n", $headers) . "\r\n";
