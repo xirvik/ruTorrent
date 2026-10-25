@@ -28,11 +28,12 @@ function addtorrent_literal($value)
 }
 
 // The result of one load: the hash it returned is a duplicate when it was
-// loaded before this request, or by an earlier item of it.
+// loaded before this request, or by an earlier item of it. A load refused
+// over its directory says so, so the user knows what to change.
 function addtorrent_status($hash, &$loaded)
 {
 	if($hash===false)
-		return("Failed");
+		return(rTorrent::refusedDirectory() ? "FailedDirectory" : "Failed");
 	$hash = strtoupper($hash);
 	if(isset($loaded[$hash]))
 		return("Duplicate");
@@ -68,7 +69,8 @@ else
 	if(isset($_REQUEST['dir_edit']))
 	{
 		$dir_edit = trim($_REQUEST['dir_edit']);
-		if((strlen($dir_edit)>0) && !rTorrentSettings::get()->correctDirectory($dir_edit))
+		if((strlen($dir_edit)>0) && (!rTorrentSettings::get()->correctDirectory($dir_edit) ||
+			!rTorrent::isInsideTopDirectory($dir_edit)))
 			$uploaded_files = array( array( 'status' => "FailedDirectory" ) );
 	}
 	// No addition is taken from the request. An addition is an rtorrent command
@@ -148,10 +150,10 @@ else
 			}
 		}
 	}
-	if (!empty($_SERVER['PHP_SELF']) && !empty($_SERVER['HTTP_HOST']))
-		$location = "Location: //".$_SERVER['HTTP_HOST'].dirname($_SERVER['PHP_SELF'])."/addtorrent.php?";
-	else
-		$location = "Location: ./addtorrent.php?";
+	// A Location may be a relative reference, so an install whose public
+	// address cannot be determined is still sent back to the page it posted.
+	$base = Requests::publicBaseURL('/php/addtorrent.php');
+	$location = "Location: ".($base===false ? "./addtorrent.php?" : $base."php/addtorrent.php?");
 	if(empty($uploaded_files))
 		$uploaded_files = array( array( 'status' => "Failed" ) );
 	foreach($uploaded_files as &$file)

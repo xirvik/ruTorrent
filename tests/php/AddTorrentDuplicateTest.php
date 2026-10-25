@@ -3,6 +3,8 @@
 require_once(__DIR__ . '/TestCase.php');
 require_once(__DIR__ . '/FakeRtorrentDaemon.php');
 require_once(__DIR__ . '/RtorrentProbeFixture.php');
+require_once(__DIR__ . '/TestHttpServer.php');
+require_once(__DIR__ . '/TestTree.php');
 
 /**
  * php/addtorrent.php reports a torrent rtorrent already has as a duplicate,
@@ -11,6 +13,9 @@ require_once(__DIR__ . '/RtorrentProbeFixture.php');
  * rtorrent answers a load for an info hash it has already loaded with 0 and
  * no fault, and drops the new copy. So the answer to the load cannot tell the
  * two apart; the script has to know what was loaded before it sent it.
+ *
+ * A load rtorrent refuses is the third outcome: no hash comes back at all,
+ * so it is neither an addition nor a duplicate.
  *
  * addtorrent.php answers with a redirect whose result[] values are the
  * outcome, so it is served by PHP's built-in server, through a router that
@@ -27,7 +32,7 @@ class AddTorrentDuplicateTest extends TestCase
 
 	public function setUp()
 	{
-		$this->base = sys_get_temp_dir() . '/rutorrent-addtorrent-duplicate-' . getmypid();
+		$this->base = sys_get_temp_dir() . '/rutorrent-addtorrent-duplicate-' . uniqid('', true);
 		@mkdir($this->base . '/profile/torrents', 0700, true);
 		@mkdir($this->base . '/profile/settings', 0700, true);
 	}
@@ -35,7 +40,7 @@ class AddTorrentDuplicateTest extends TestCase
 	public function tearDown()
 	{
 		$this->stop();
-		$this->deleteTree($this->base);
+		TestTree::remove($this->base);
 	}
 
 	private function stop()
@@ -44,25 +49,8 @@ class AddTorrentDuplicateTest extends TestCase
 			$this->daemon->stop();
 			$this->daemon = null;
 		}
-		if (is_resource($this->server)) {
-			@proc_terminate($this->server);
-			@proc_close($this->server);
-		}
+		if ($this->server !== null) $this->server->close();
 		$this->server = null;
-	}
-
-	private function deleteTree($path)
-	{
-		if (!is_dir($path)) {
-			return;
-		}
-		foreach (scandir($path) as $entry) {
-			if (($entry !== '.') && ($entry !== '..')) {
-				$child = $path . '/' . $entry;
-				is_dir($child) ? $this->deleteTree($child) : @unlink($child);
-			}
-		}
-		@rmdir($path);
 	}
 
 	/** A single file torrent whose info dictionary hashes to the return value. */
@@ -75,30 +63,19 @@ class AddTorrentDuplicateTest extends TestCase
 		return 'd8:announce' . strlen($announce) . ':' . $announce . '4:info' . $info . 'e';
 	}
 
-	private function reservePort()
-	{
-		$socket = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
-		if ($socket === false) {
-			throw new Exception('could not reserve a local port: ' . $error);
-		}
-		$name = stream_socket_get_name($socket, false);
-		fclose($socket);
-		return (int)substr($name, strrpos($name, ':') + 1);
-	}
-
 	/**
 	 * Sends one request to addtorrent.php, with a daemon that has the $loaded
 	 * hashes and answers $loads loads, and returns the result[] values it
-	 * redirects with.
+	 * redirects with. $loads is a count of loads answered the way rtorrent
+	 * answers an accepted one, or the list of reply entries to answer them
+	 * with when the answer itself is the subject.
 	 */
 	private function add($loaded, $loads, $contentType, $body)
 	{
 		$this->stop();
 		$root = realpath(__DIR__ . '/../..');
-		$replies = array($loaded);
-		for ($i = 0; $i < $loads; $i++) {
-			$replies[] = array(0);
-		}
+		$replies = array_merge(array($loaded),
+			is_array($loads) ? $loads : array_fill(0, $loads, array(0)));
 		// An install whose interface has been opened has a settings cache.
 		// This script is driven against a profile of its own, so leave one
 		// there rather than have it probe and spend the replies below.
@@ -118,32 +95,11 @@ class AddTorrentDuplicateTest extends TestCase
 			. 'require(' . var_export($root . '/php/addtorrent.php', true) . ");\n"
 			. "return true;\n");
 
-		$port = $this->reservePort();
-		// "exec" replaces the shell proc_open() runs the string through, so the
-		// server is the process proc_terminate() signals; /bin/sh forks php and
-		// signalling only the shell would leave the server running.
-		$this->server = proc_open('exec ' . escapeshellarg(PHP_BINARY) . ' -d display_errors=0 -S 127.0.0.1:' . $port
-			. ' ' . escapeshellarg($router), array(
-				0 => array('pipe', 'r'),
-				1 => array('file', $this->base . '/server.out', 'a'),
-				2 => array('file', $this->base . '/server.err', 'a'),
-			), $pipes, $this->base);
-		fclose($pipes[0]);
-		$socket = false;
-		for ($i = 0; ($i < 100) && ($socket === false); $i++) {
-			usleep(25000);
-			$socket = @fsockopen('127.0.0.1', $port, $errno, $error, 0.05);
-		}
-		if ($socket === false) {
-			throw new Exception('PHP server did not start: ' . @file_get_contents($this->base . '/server.err'));
-		}
-		fwrite($socket, "POST /php/addtorrent.php HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n"
-			. 'Content-Type: ' . $contentType . "\r\nContent-Length: " . strlen($body) . "\r\n\r\n" . $body);
-		$response = stream_get_contents($socket);
-		fclose($socket);
-
-		if (!preg_match('`^Location: [^?\r\n]*\?([^\r\n]*)`mi', (string)$response, $location)) {
-			return array('no redirect: ' . $response);
+		$this->server = TestHttpServer::start($this->base, array(), PhpProcess::sameIni(), $router);
+		$response = TestHttpServer::rawPost($this->server->port(), '/php/addtorrent.php', $body, $contentType);
+		if (!isset($response['headers']['location'])
+			|| !preg_match('`^[^?]*\?(.*)$`', $response['headers']['location'], $location)) {
+			return array('no redirect: ' . $response['body']);
 		}
 		parse_str($location[1], $query);
 		return isset($query['result']) ? $query['result'] : array();
@@ -171,7 +127,7 @@ class AddTorrentDuplicateTest extends TestCase
 		$this->assertEquals(3, $this->loadCalls(), 'each magnet was still sent');
 	}
 
-	private function upload($loaded, $names)
+	private function upload($loaded, $names, $loads = null)
 	{
 		foreach ($this->kept() as $file) {
 			unlink($this->base . '/profile/torrents/' . $file);
@@ -185,7 +141,8 @@ class AddTorrentDuplicateTest extends TestCase
 				. "Content-Type: application/x-bittorrent\r\n\r\n" . $torrent . "\r\n";
 		}
 		$body .= '--' . $boundary . "--\r\n";
-		return $this->add($loaded ? array(self::LOADED, $hash) : array(self::LOADED), count($names),
+		return $this->add($loaded ? array(self::LOADED, $hash) : array(self::LOADED),
+			$loads === null ? count($names) : $loads,
 			'multipart/form-data; boundary=' . $boundary, $body);
 	}
 
@@ -211,6 +168,28 @@ class AddTorrentDuplicateTest extends TestCase
 		$this->assertEquals(2, $this->loadCalls(), 'both uploads were sent');
 		$this->assertEquals(array('one.torrent'), $this->kept(),
 			'only the upload that was added is kept: ' . json_encode($this->kept()));
+	}
+
+	public function testAnUploadRtorrentRefusesIsFailedAndNotKept()
+	{
+		$results = $this->upload(false, array('one.torrent'),
+			array(FakeRtorrentDaemon::fault('Could not create download')));
+		$this->assertEquals(array('Failed'), $results,
+			'a load rtorrent refused is a failure: ' . json_encode($results));
+		$this->assertEquals(1, $this->loadCalls(), 'the upload was still sent');
+		$this->assertEquals(array(), $this->kept(),
+			'and the refused copy is not kept: ' . json_encode($this->kept()));
+	}
+
+	public function testAMagnetRtorrentRefusesIsFailed()
+	{
+		$results = $this->add(array(self::LOADED),
+			array(FakeRtorrentDaemon::fault('Could not create download')),
+			'application/x-www-form-urlencoded',
+			'url=' . rawurlencode('magnet:?xt=urn:btih:' . self::FRESH));
+		$this->assertEquals(array('Failed'), $results,
+			'a magnet rtorrent refused is a failure: ' . json_encode($results));
+		$this->assertEquals(1, $this->loadCalls(), 'the magnet was still sent');
 	}
 
 	public function testTheResultPageShowsADuplicateAsAnAlert()
