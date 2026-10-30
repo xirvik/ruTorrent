@@ -26,13 +26,8 @@ function skip_move($files)
 	if(strlen($filter)>0)
     	{
 		Debug("using filter:".$filter);
-		foreach($files as $file)
-		{
-			if ( preg_match($filter.'u',$file)==1)
-			{
-				return true;
-			}
-	    	}
+		if($at->skipsMove($files))
+			return true;
 		Debug("filter: " . $filter . " did not match any files in" . implode(" | ",$files) .". end");
 	}
 	return(false);
@@ -62,7 +57,7 @@ function operationOnTorrentFiles($torrent,&$base_path,$base_file,$is_multy_file,
 		foreach($info['files'] as $key=>$file)
 			$files[] = implode('/',$file['path']);
 	else
-		$files[] = $info['name'];
+		$files[] = $base_file;
 
     if (skip_move($files)){
         $ret = false;
@@ -132,6 +127,12 @@ if( $at->enable_move && (@preg_match($at->automove_filter.'u',$label)==1) )
 		        			$dest_path.=FileUtil::addslash($label);
 			        	if($at->addName && ($name!=''))
 						$dest_path.=FileUtil::addslash($name);
+					// Checked here as well as in check.php: the older and the
+					// copy and link hooks run this script alone.
+					$target = $dest_path.($is_multi ? rtAddTailSlash( $base_name ) : '');
+					if(!rTorrent::isInsideTopDirectory($target))
+						Debug( "outside the top directory: ".$target );
+					else
 					if(operationOnTorrentFiles($torrent,$base_path,$base_name,$is_multi,$dest_path,$fileop_type))
 					{
 //						if($fileop_type=="Move")

@@ -426,35 +426,56 @@ class rTorrent
 		return($hashes);
 	}
 
-	static public function getSource($hash)
+	static public function getSource($hash, $knownPaths = null)
 	{
-		$req = new rXMLRPCRequest( array(
-			new rXMLRPCCommand("get_session"),
-			new rXMLRPCCommand("d.get_tied_to_file",$hash)) );
-		if($req->run() && !$req->fault)
+		// Batched readers pass the paths they already hold; false means none.
+		if($knownPaths === null)
 		{
-			$fname = $req->val[0].$hash.".torrent";
-			if(empty($req->val[0]) || !is_readable($fname))
+			$req = new rXMLRPCRequest( array(
+				new rXMLRPCCommand("get_session"),
+				new rXMLRPCCommand("d.get_tied_to_file",$hash)) );
+			$knownPaths = ($req->run() && !$req->fault) ? $req->val : false;
+		}
+		if(!is_array($knownPaths) || !isset($knownPaths[0], $knownPaths[1]))
+			return(false);
+		$fname = $knownPaths[0].$hash.".torrent";
+		if(empty($knownPaths[0]) || !is_readable($fname))
+		{
+			if(strlen($knownPaths[1]) && is_readable($knownPaths[1]))
+				$fname = $knownPaths[1];
+			else
+				$fname = null;
+		}
+		if($fname)
+		{
+			$torrent = new Torrent( $fname );
+			if( !$torrent->errors() )
 			{
-				if(strlen($req->val[1]) && is_readable($req->val[1]))
-					$fname = $req->val[1];
-				else
-					$fname = null;
-			}
-			if($fname)
-			{
-				$torrent = new Torrent( $fname );
-				if( !$torrent->errors() )
-				{
-					if(isset($torrent->{'libtorrent_resume'}))
-						unset($torrent->{'libtorrent_resume'});
-					if(isset($torrent->{'rtorrent'}))
-						unset($torrent->{'rtorrent'});
-					return($torrent);
-				}
+				if(isset($torrent->{'libtorrent_resume'}))
+					unset($torrent->{'libtorrent_resume'});
+				if(isset($torrent->{'rtorrent'}))
+					unset($torrent->{'rtorrent'});
+				return($torrent);
 			}
 		}
 		return(false);
+	}
+
+	// The session directory and tied file of every loaded torrent, in one
+	// request, for callers that read several sources. Keyed by hash. The
+	// reply reader escapes backslashes and double quotes; these paths are
+	// returned unescaped.
+	static public function getSourcePaths()
+	{
+		$req = new rXMLRPCRequest( array(
+			new rXMLRPCCommand("get_session"),
+			new rXMLRPCCommand("d.multicall", array("main", getCmd("d.get_hash="), getCmd("d.get_tied_to_file="))) ) );
+		$paths = array();
+		if($req->run() && !$req->fault && (count($req->val) % 2 == 1))
+			for($i = 1; $i < count($req->val); $i += 2)
+				$paths[$req->val[$i]] = array(rXMLRPCRequest::unescapeValue($req->val[0]),
+					rXMLRPCRequest::unescapeValue($req->val[$i+1]));
+		return($paths);
 	}
 
 	static public function fastResume($torrent, $base, $add_path = true)
@@ -462,7 +483,6 @@ class rTorrent
 	        $files = array();
 	        $info = $torrent->info;
 	        $psize = intval($info['piece length']);
-		$base = trim($base);
 	        if($base=='')
 	        {
 	        	$base = rTorrentSettings::get()->directory;
@@ -471,16 +491,31 @@ class rTorrent
 	        {
 		        $base = FileUtil::addslash($base);
 	                $tsize = 0.0;
+			// Raw components and those under the legacy UTF-8 aliases a daemon
+			// can load: a string name.utf-8 and a list of strings path.utf-8.
+			$root = array($info['name']);
+			$rootAlias = (isset($info['name.utf-8']) && is_string($info['name.utf-8'])) ? array($info['name.utf-8']) : $root;
 			if(isset($info['files']))
 			{
+				if(!$add_path)
+					$root = $rootAlias = array();
 				foreach($info['files'] as $key=>$file)
 				{
 				        $tsize+=floatval($file['length']);
-					$files[] = ($add_path ? $info['name']."/".implode('/',$file['path']) : implode('/',$file['path']));
+					$alias = $file['path'];
+					if(isset($file['path.utf-8']) && is_array($file['path.utf-8']) &&
+						(array_values($file['path.utf-8']) === array_filter($file['path.utf-8'], 'is_string')))
+						$alias = $file['path.utf-8'];
+					$path = array_merge($root, $file['path']);
+					if(!self::isCertifiable($path, array_merge($rootAlias, $alias)))
+						return(false);
+					$files[] = implode('/', $path);
 				}
 			}
 			else
 			{
+				if(!self::isCertifiable($root, $rootAlias))
+					return(false);
 				$tsize = floatval($info['length']);
 				$files[] = $info['name'];
 			}
@@ -501,6 +536,18 @@ class rTorrent
 			return($torrent);
 		}
 		return(false);
+	}
+
+	/**
+	 * Whether fastResume() may certify a file at its raw path, which needs the
+	 * daemon to load it there. By default libtorrent 0.16.25 and later load a
+	 * multi-file torrent under differing UTF-8 aliases, and 0.16.27 and later a
+	 * single file too; up to 0.16.13 an alias can be loaded through
+	 * encoding.add. libtorrent 0.16.22 and later replace a '/' inside a component.
+	 */
+	static private function isCertifiable($path, $alias)
+	{
+		return(($alias === $path) && (strpos(implode('', $path), '/') === false));
 	}
 
 	/**
@@ -614,7 +661,9 @@ class rTorrent
 		$rest = '';
 		while(!file_exists($path) && !is_link($path))
 		{
-			$rest = '/'.basename($path).$rest;
+			// Not basename(): on PHP 7.4 it loses names the locale cannot decode,
+			// non-ASCII ones in C and non-UTF-8 ones in a UTF-8 locale.
+			$rest = '/'.FileUtil::getFileName($path).$rest;
 			$path = dirname($path);
 		}
 		$real = realpath($path);

@@ -4,7 +4,7 @@
  */
 
 var theWebUI = {
-	version: "5.3.19",
+	version: "5.3.20",
 	tables: {
 		trt: {
 			obj: new dxSTable(),
@@ -227,7 +227,7 @@ var theWebUI = {
 //
 
 	init: function() {
-		log("WebUI started.");
+		log(theUILang.webUIStarted);
 		this.setStatusUpdate();
 		if (browser.isOldIE)
 			this.msg(theUILang.Doesnt_support);
