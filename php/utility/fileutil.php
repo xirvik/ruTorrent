@@ -5,6 +5,9 @@ require_once( 'user.php' );
 
 class FileUtil
 {
+	const LOG_LOCK_ATTEMPTS = 100;
+	const LOG_LOCK_WAIT_US = 10000;
+
 	private static $profilePathInstance = null;
 
 	public static function getFileName($path)
@@ -298,14 +301,63 @@ class FileUtil
 				touch( $logTarget );
 				chmod( $logTarget, (isset($profileMask) ? $profileMask : 0777) & 0666 );
 			}
+			$line = "[".date_create()->format('Y-m-d H:i:s')."] {$str}\n";
+			$isRegular = $isFilesystem && is_file( $logTarget );
+			// fs.protected_regular refuses an open that may create the file when
+			// another user owns it in a sticky directory such as /tmp, whatever
+			// its mode, so an existing log is first opened without O_CREAT.
+			if( $isRegular && self::appendToExistingLog( $logTarget, $line ) )
+				return;
 			// Regular and unstatable stream logs only need write access. Keep the
 			// old mode for FIFOs, where a write-only open blocks until a reader appears.
 			$w = fopen( $logTarget, (!$isFilesystem && !$exists) || is_file( $logTarget ) ? "ab" : "ab+" );
 			if( $w )
 			{
-				fputs( $w, "[".date_create()->format('Y-m-d H:i:s')."] {$str}\n" );
-				fclose( $w );
+				try
+				{
+					if( $isRegular )
+						self::lockLog( $w );
+					fputs( $w, $line );
+				}
+				finally
+				{
+					fclose( $w );
+				}
 			}
+		}
+	}
+
+	// Without O_APPEND, the lock keeps a concurrent toLog() line from being
+	// overwritten between the seek and the write. Closing the handle releases
+	// the lock even when the write throws.
+	private static function appendToExistingLog( $path, $line )
+	{
+		$w = @fopen( $path, "r+b" );
+		if( !$w )
+			return false;
+		try
+		{
+			self::lockLog( $w );
+			fseek( $w, 0, SEEK_END );
+			fputs( $w, $line );
+			fflush( $w );
+		}
+		finally
+		{
+			fclose( $w );
+		}
+		return true;
+	}
+
+	// Waits a bounded time, so a writer stopped while holding the lock cannot
+	// hang every request that logs; the line is written either way.
+	private static function lockLog( $w )
+	{
+		for( $attempt = 0; $attempt < self::LOG_LOCK_ATTEMPTS; $attempt++ )
+		{
+			if( flock( $w, LOCK_EX | LOCK_NB, $wouldBlock ) || !$wouldBlock )
+				return;
+			usleep( self::LOG_LOCK_WAIT_US );
 		}
 	}
 
