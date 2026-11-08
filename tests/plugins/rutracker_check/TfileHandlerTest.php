@@ -63,7 +63,7 @@ function tfileTorrent($name)
     $raw = strictTorrentRaw($name, 'http://tfile.me/ann?uk=0000', tfileTopicUrl(1001));
     $torrent = @new Torrent($raw);
     strictAssertTrue(!$torrent->errors(), 'torrent fixture must parse');
-    return array($raw, strtoupper((string) $torrent->hash_info()), $torrent);
+    return [$raw, strtoupper((string) $torrent->hash_info()), $torrent];
 }
 
 $suite = new StrictTestSuite();
@@ -74,23 +74,35 @@ $suite->test('with no origin configured the handler asks nothing and says why', 
 
     $result = TfileCheckImpl::download_torrent(tfileTopicUrl(1001), $hash, $torrent);
 
-    strictAssertSame(ruTrackerChecker::STE_NOT_NEED, $result,
-        'a handler with no site to read has nothing to say about the torrent');
-    strictAssertSame(array(), Snoopy::$requests,
-        'and sends no request, least of all to a host nobody chose');
-    $line = strictAssertOneLogMatching(ruTrackerChecker::$logs, 'tfileOrigin',
-        'the reason is logged, naming the setting that carries the site');
+    strictAssertSame(
+        ruTrackerChecker::STE_NOT_NEED,
+        $result,
+        'a handler with no site to read has nothing to say about the torrent',
+    );
+    strictAssertSame(
+        [],
+        Snoopy::$requests,
+        'and sends no request, least of all to a host nobody chose',
+    );
+    $line = strictAssertOneLogMatching(
+        ruTrackerChecker::$logs,
+        'tfileOrigin',
+        'the reason is logged, naming the setting that carries the site',
+    );
     strictAssertEnglish($line, 'the notice is a log line');
 });
 
 $suite->test('the notice is said once however many topics come through', function () {
     tfileReset('');
-    foreach (array('one.mkv', 'two.mkv', 'three.mkv') as $name) {
+    foreach (['one.mkv', 'two.mkv', 'three.mkv'] as $name) {
         list($raw, $hash, $torrent) = tfileTorrent($name);
         TfileCheckImpl::download_torrent(tfileTopicUrl(1001), $hash, $torrent);
     }
-    strictAssertSame(1, count(strictLogsMatching(ruTrackerChecker::$logs, 'tfileOrigin')),
-        'a cycle holding many tfile topics does not repeat the notice for each of them');
+    strictAssertSame(
+        1,
+        count(strictLogsMatching(ruTrackerChecker::$logs, 'tfileOrigin')),
+        'a cycle holding many tfile topics does not repeat the notice for each of them',
+    );
 });
 
 $suite->test('the topic is read on the configured origin', function () {
@@ -101,8 +113,11 @@ $suite->test('the topic is read on the configured origin', function () {
     $result = TfileCheckImpl::download_torrent(tfileTopicUrl(1001), $hash, $torrent);
 
     strictAssertSame(ruTrackerChecker::STE_UPTODATE, $result, 'the topic still carries this hash');
-    strictAssertSame(array(array('fetchComplex', tfileViewtopicUrl(1001))), Snoopy::$requests,
-        'one request, on the configured origin');
+    strictAssertSame(
+        [['fetchComplex', tfileViewtopicUrl(1001)]],
+        Snoopy::$requests,
+        'one request, on the configured origin',
+    );
 });
 
 $suite->test('the replacement is downloaded from the configured origin', function () {
@@ -118,12 +133,12 @@ $suite->test('the replacement is downloaded from the configured origin', functio
 
     strictAssertSame(ruTrackerChecker::STE_UPDATED, $result, 'the newer torrent replaces the old one');
     strictAssertSame(
-        array(
-            array('fetchComplex', tfileViewtopicUrl(1001)),
-            array('fetchComplex', tfileDownloadUrl(77)),
-        ),
+        [
+            ['fetchComplex', tfileViewtopicUrl(1001)],
+            ['fetchComplex', tfileDownloadUrl(77)],
+        ],
         Snoopy::$requests,
-        'both the topic and the torrent come from the configured origin'
+        'both the topic and the torrent come from the configured origin',
     );
     strictAssertSame(1, ruTrackerChecker::$createCalls, 'the answer became a torrent');
 });
@@ -139,12 +154,16 @@ $suite->test('the retired domain is never asked for', function () {
     TfileCheckImpl::download_torrent(tfileTopicUrl(1001), $hash, $torrent);
 
     foreach (Snoopy::$requests as $request) {
-        strictAssertTrue(strpos($request[1], TFILE_RETIRED_HOST) === false,
-            'the host the handler used to carry is not in ' . $request[1]);
+        strictAssertTrue(
+            strpos($request[1], TFILE_RETIRED_HOST) === false,
+            'the host the handler used to carry is not in ' . $request[1],
+        );
     }
-    strictAssertTrue(strpos(file_get_contents(testFindRepoRoot()
+    strictAssertTrue(
+        strpos(file_get_contents(testFindRepoRoot()
         . '/plugins/rutracker_check/trackers/tfile.php'), TFILE_RETIRED_HOST) === false,
-        'and it is not written in the handler either');
+        'and it is not written in the handler either',
+    );
 });
 
 // The cases above drive the handler against the fake ruTrackerChecker, whose
@@ -179,22 +198,22 @@ PHP;
     $file = sys_get_temp_dir() . '/tfile-real-origin-' . getmypid() . '.php';
     file_put_contents($file, $script);
     try {
-        $output = array();
+        $output = [];
         $status = 0;
         exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($file) . ' ' . escapeshellarg($root)
             . ' 2>&1', $output, $status);
         strictAssertSame(0, $status, 'the real resolution runs: ' . implode("\n", $output));
         strictAssertSame(
-            array(
+            [
                 "'https://tfile.example:8443'",
                 "''",
                 "''",
                 "''",
                 "''",
-            ),
+            ],
             $output,
             'a configured https origin comes back folded; http, a bare host and nothing come back empty, '
-            . 'and so does a tracker loginmgr has no account for'
+            . 'and so does a tracker loginmgr has no account for',
         );
     } finally {
         unlink($file);

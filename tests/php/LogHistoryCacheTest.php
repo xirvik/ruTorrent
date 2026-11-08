@@ -11,13 +11,13 @@ require_once(__DIR__ . '/TestCase.php');
  */
 class LogHistoryCacheTest extends TestCase
 {
-	private $base;
+    private $base;
 
-	public function setUp()
-	{
-		$this->base = sys_get_temp_dir() . '/rutorrent-log-history-' . getmypid();
-		@mkdir($this->base . '/profile/settings', 0777, true);
-		file_put_contents($this->base . '/request.php', '<?php
+    public function setUp()
+    {
+        $this->base = sys_get_temp_dir() . '/rutorrent-log-history-' . getmypid();
+        @mkdir($this->base . '/profile/settings', 0777, true);
+        file_put_contents($this->base . '/request.php', '<?php
 $_ENV["RU_PROFILE_PATH"] = getenv("RU_PROFILE_PATH");
 $_ENV["RU_LOG_FILE"] = getenv("RU_LOG_FILE");
 $_SERVER["REQUEST_METHOD"] = getenv("LOG_HISTORY_METHOD");
@@ -26,67 +26,74 @@ $_POST = json_decode(getenv("LOG_HISTORY_POST"), true);
 chdir(getenv("LOG_HISTORY_PLUGIN"));
 require "log_history.php";
 ');
-	}
+    }
 
-	public function tearDown()
-	{
-		foreach (array('profile/settings/log_history.dat', 'profile/settings/log_history.dat.lock',
-			'errors.log', 'request.php') as $file) {
-			@unlink($this->base . '/' . $file);
-		}
-		@rmdir($this->base . '/profile/settings');
-		@rmdir($this->base . '/profile');
-		@rmdir($this->base);
-	}
+    public function tearDown()
+    {
+        foreach (['profile/settings/log_history.dat', 'profile/settings/log_history.dat.lock',
+            'errors.log', 'request.php'] as $file) {
+            @unlink($this->base . '/' . $file);
+        }
+        @rmdir($this->base . '/profile/settings');
+        @rmdir($this->base . '/profile');
+        @rmdir($this->base);
+    }
 
-	private function request($method, $post = array())
-	{
-		$env = array(
-			'RU_PROFILE_PATH' => $this->base . '/profile',
-			'RU_LOG_FILE' => $this->base . '/errors.log',
-			'LOG_HISTORY_METHOD' => $method,
-			'LOG_HISTORY_POST' => json_encode($post),
-			'LOG_HISTORY_PLUGIN' => realpath(__DIR__ . '/../../plugins/log_history'),
-		);
-		$process = proc_open(array(PHP_BINARY, '-d', 'display_errors=stderr', $this->base . '/request.php'),
-			array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes, null, $env);
-		fclose($pipes[0]);
-		$out = stream_get_contents($pipes[1]);
-		fclose($pipes[1]);
-		fclose($pipes[2]);
-		proc_close($process);
-		return json_decode($out, true);
-	}
+    public function testASavedMessageIsReadBackOnTheNextRequest()
+    {
+        $saved = $this->request('POST', ['message' => 'first entry', 'status' => 'info']);
+        $this->assertEquals('success', $saved['status'] ?? null);
+        $this->assertTrue(
+            is_file($this->base . '/profile/settings/log_history.dat'),
+            'the message is stored in log_history.dat',
+        );
 
-	private function refusals()
-	{
-		$log = @file_get_contents($this->base . '/errors.log');
-		return $log === false ? 0 : substr_count($log, 'log_history.dat');
-	}
+        $read = $this->request('GET');
+        $messages = array_column($read['logs'] ?? [], 'message');
+        $this->assertEquals(['first entry'], $messages);
+        $this->assertEquals(0, $this->refusals());
+    }
 
-	public function testASavedMessageIsReadBackOnTheNextRequest()
-	{
-		$saved = $this->request('POST', array('message' => 'first entry', 'status' => 'info'));
-		$this->assertEquals('success', $saved['status'] ?? null);
-		$this->assertTrue(is_file($this->base . '/profile/settings/log_history.dat'),
-			'the message is stored in log_history.dat');
+    public function testMessagesAccumulateAcrossRequests()
+    {
+        @unlink($this->base . '/profile/settings/log_history.dat');
+        $this->request('POST', ['message' => 'first entry', 'status' => 'info']);
+        $this->request('POST', ['message' => 'second entry', 'status' => 'info']);
+        $this->request('POST', ['message' => 'third entry', 'status' => 'error']);
 
-		$read = $this->request('GET');
-		$messages = array_column($read['logs'] ?? array(), 'message');
-		$this->assertEquals(array('first entry'), $messages);
-		$this->assertEquals(0, $this->refusals());
-	}
+        $read = $this->request('GET');
+        $messages = array_column($read['logs'] ?? [], 'message');
+        $this->assertEquals(['first entry', 'second entry', 'third entry'], $messages);
+        $this->assertEquals(0, $this->refusals());
+    }
 
-	public function testMessagesAccumulateAcrossRequests()
-	{
-		@unlink($this->base . '/profile/settings/log_history.dat');
-		$this->request('POST', array('message' => 'first entry', 'status' => 'info'));
-		$this->request('POST', array('message' => 'second entry', 'status' => 'info'));
-		$this->request('POST', array('message' => 'third entry', 'status' => 'error'));
+    private function request($method, $post = [])
+    {
+        $env = [
+            'RU_PROFILE_PATH' => $this->base . '/profile',
+            'RU_LOG_FILE' => $this->base . '/errors.log',
+            'LOG_HISTORY_METHOD' => $method,
+            'LOG_HISTORY_POST' => json_encode($post),
+            'LOG_HISTORY_PLUGIN' => realpath(__DIR__ . '/../../plugins/log_history'),
+        ];
+        $process = proc_open(
+            [PHP_BINARY, '-d', 'display_errors=stderr', $this->base . '/request.php'],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+            null,
+            $env,
+        );
+        fclose($pipes[0]);
+        $out = stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        proc_close($process);
+        return json_decode($out, true);
+    }
 
-		$read = $this->request('GET');
-		$messages = array_column($read['logs'] ?? array(), 'message');
-		$this->assertEquals(array('first entry', 'second entry', 'third entry'), $messages);
-		$this->assertEquals(0, $this->refusals());
-	}
+    private function refusals()
+    {
+        $log = @file_get_contents($this->base . '/errors.log');
+        return $log === false ? 0 : substr_count($log, 'log_history.dat');
+    }
 }

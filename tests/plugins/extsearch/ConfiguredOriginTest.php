@@ -22,11 +22,11 @@ require_once(__DIR__ . '/../../../php/util.php');
 require_once(__DIR__ . '/../../../plugins/extsearch/engines.php');
 
 // name => array(the loginmgr setting, a query fragment the search URL carries)
-$extCoEngines = array(
-    'ABTorrents' => array('abTorrentsOrigin', '/browse.php?search='),
-    'RevolutionTT' => array('revolutionTTOrigin', '/browse.php?search='),
-    'Redacted' => array('redactedOrigin', '/torrents.php?searchstr='),
-);
+$extCoEngines = [
+    'ABTorrents' => ['abTorrentsOrigin', '/browse.php?search='],
+    'RevolutionTT' => ['revolutionTTOrigin', '/browse.php?search='],
+    'Redacted' => ['redactedOrigin', '/torrents.php?searchstr='],
+];
 
 foreach (array_keys($extCoEngines) as $extCoName) {
     require_once(__DIR__ . '/../../../plugins/extsearch/engines/' . $extCoName . '.php');
@@ -37,7 +37,7 @@ function extCoSame($expected, $actual, $message)
     if ($expected !== $actual) {
         throw new RuntimeException(
             $message . '; expected ' . var_export($expected, true)
-            . ', got ' . var_export($actual, true)
+            . ', got ' . var_export($actual, true),
         );
     }
 }
@@ -92,7 +92,7 @@ function extCoProbe($name)
 // answer extsearch is assembling.
 function extCoSearch($engine)
 {
-    $ret = array();
+    $ret = [];
     set_error_handler(function ($number, $message, $file, $line) {
         throw new RuntimeException("PHP diagnostic: {$message} ({$file}:{$line})");
     });
@@ -109,37 +109,52 @@ function extCoSearch($engine)
 // plugin configuration lands in the method's scope unless accounts.php
 // declares it global. That include evals plugins/loginmgr/conf.php, whose
 // shipped '' resets the settings, so the cases configure them afterwards.
-extCoSame(false, class_exists('ABTorrentsAccount', false),
-    'nothing has loaded loginmgr before the first search');
+extCoSame(
+    false,
+    class_exists('ABTorrentsAccount', false),
+    'nothing has loaded loginmgr before the first search',
+);
 $extCoFirst = extCoProbe('ABTorrents');
 $extCoFirstResult = extCoSearch($extCoFirst);
 $extCoLoadedByEngine = class_exists('ABTorrentsAccount', false);
 
-$tests = array(
+$tests = [
     'the engine reads loginmgr\'s setting, and the first search is what loads it' => function () {
         global $extCoLoadedByEngine, $extCoFirst, $extCoFirstResult, $extCoEngines;
         extCoSame(true, $extCoLoadedByEngine, 'the engine loads the loginmgr account it reads');
-        extCoSame(true, array_key_exists('abTorrentsOrigin', $GLOBALS),
-            'and the setting reaches the global scope from inside action()');
-        extCoSame(array(), $extCoFirst->requests, 'the shipped configuration searches nothing');
-        extCoSame(array(''), array_keys($extCoFirstResult), 'and returns one entry with no link');
+        extCoSame(
+            true,
+            array_key_exists('abTorrentsOrigin', $GLOBALS),
+            'and the setting reaches the global scope from inside action()',
+        );
+        extCoSame([], $extCoFirst->requests, 'the shipped configuration searches nothing');
+        extCoSame([''], array_keys($extCoFirstResult), 'and returns one entry with no link');
     },
 
     'with no origin the search sends nothing and says what to set' => function () {
         global $extCoEngines;
         foreach ($extCoEngines as $name => $nfo) {
-            foreach (array('', 'http://tracker.example', 'tracker.example',
-                'https://tracker.example/browse.php', null, array('https://tracker.example')) as $configured) {
+            foreach (['', 'http://tracker.example', 'tracker.example',
+                'https://tracker.example/browse.php', null, ['https://tracker.example']] as $configured) {
                 extCoConfigure($nfo[0], $configured);
                 $engine = extCoProbe($name);
                 $ret = extCoSearch($engine);
-                extCoSame(array(), $engine->requests,
-                    $name . ' searches nothing with ' . var_export($configured, true));
-                extCoSame(array(''), array_keys($ret),
-                    $name . ': one entry and no link with ' . var_export($configured, true));
-                foreach (array($name . ':', '$' . $nfo[0], 'https origin', 'loginmgr') as $part) {
-                    extCoSame(true, strpos($ret['']['name'], $part) !== false,
-                        $name . ': the entry names ' . $part . ': ' . $ret['']['name']);
+                extCoSame(
+                    [],
+                    $engine->requests,
+                    $name . ' searches nothing with ' . var_export($configured, true),
+                );
+                extCoSame(
+                    [''],
+                    array_keys($ret),
+                    $name . ': one entry and no link with ' . var_export($configured, true),
+                );
+                foreach ([$name . ':', '$' . $nfo[0], 'https origin', 'loginmgr'] as $part) {
+                    extCoSame(
+                        true,
+                        strpos($ret['']['name'], $part) !== false,
+                        $name . ': the entry names ' . $part . ': ' . $ret['']['name'],
+                    );
                 }
             }
         }
@@ -148,19 +163,25 @@ $tests = array(
     'a configured origin is the only host the search asks' => function () {
         global $extCoEngines;
         foreach ($extCoEngines as $name => $nfo) {
-            foreach (array(
+            foreach ([
                 'https://tracker.example' => 'https://tracker.example',
                 'https://TRACKER.Example./' => 'https://tracker.example',
                 'https://ww4.tracker.example:8443' => 'https://ww4.tracker.example:8443',
-            ) as $configured => $origin) {
+            ] as $configured => $origin) {
                 extCoConfigure($nfo[0], $configured);
                 $engine = extCoProbe($name);
                 extCoSearch($engine);
-                extCoSame(true, count($engine->requests) > 0,
-                    $name . ' searches once the origin is set');
+                extCoSame(
+                    true,
+                    count($engine->requests) > 0,
+                    $name . ' searches once the origin is set',
+                );
                 foreach ($engine->requests as $url) {
-                    extCoSame(0, strpos($url, $origin . $nfo[1]),
-                        $name . ': every request is built on the configured origin: ' . $url);
+                    extCoSame(
+                        0,
+                        strpos($url, $origin . $nfo[1]),
+                        $name . ': every request is built on the configured origin: ' . $url,
+                    );
                 }
             }
         }
@@ -175,11 +196,17 @@ $tests = array(
             $class = $name . 'Account';
             $account = new $class();
             foreach ($engine->requests as $url) {
-                extCoSame(true, $account->test($url),
-                    $name . ': loginmgr claims the URL its engine searches: ' . $url);
+                extCoSame(
+                    true,
+                    $account->test($url),
+                    $name . ': loginmgr claims the URL its engine searches: ' . $url,
+                );
             }
-            extCoSame('https://tracker.example', $account->url,
-                $name . ': the account and the engine read one setting');
+            extCoSame(
+                'https://tracker.example',
+                $account->url,
+                $name . ': the account and the engine read one setting',
+            );
         }
     },
 
@@ -189,18 +216,21 @@ $tests = array(
             $source = file_get_contents(__DIR__ . '/../../../plugins/extsearch/engines/' . $name . '.php');
             // The string literals only: a comment may name a host as an
             // example, and an example is not what gets fetched.
-            $named = array();
+            $named = [];
             foreach (token_get_all($source) as $token) {
                 if (is_array($token) && $token[0] === T_CONSTANT_ENCAPSED_STRING
                     && preg_match('@https?://@i', $token[1])) {
                     $named[] = $token[1];
                 }
             }
-            extCoSame(array(), $named,
-                $name . ' builds every URL on the configured origin, and names no host');
+            extCoSame(
+                [],
+                $named,
+                $name . ' builds every URL on the configured origin, and names no host',
+            );
         }
     },
-);
+];
 
 $failures = 0;
 foreach ($tests as $name => $callback) {

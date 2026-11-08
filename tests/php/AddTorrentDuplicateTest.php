@@ -24,230 +24,298 @@ require_once(__DIR__ . '/../../php/Torrent.php');
  */
 class AddTorrentDuplicateTest extends TestCase
 {
-	const LOADED = '1111111111111111111111111111111111111111';
-	const FRESH = '2222222222222222222222222222222222222222';
+    public const LOADED = '1111111111111111111111111111111111111111';
+    public const FRESH = '2222222222222222222222222222222222222222';
 
-	private $base;
-	private $daemon;
-	private $server;
+    private $base;
+    private $daemon;
+    private $server;
+    private $saveUploads = true;
 
-	public function setUp()
-	{
-		$this->base = sys_get_temp_dir() . '/rutorrent-addtorrent-duplicate-' . uniqid('', true);
-		@mkdir($this->base . '/profile/torrents', 0700, true);
-		@mkdir($this->base . '/profile/settings', 0700, true);
-	}
+    public function setUp()
+    {
+        $this->base = sys_get_temp_dir() . '/rutorrent-addtorrent-duplicate-' . uniqid('', true);
+        @mkdir($this->base . '/profile/torrents', 0700, true);
+        @mkdir($this->base . '/profile/settings', 0700, true);
+    }
 
-	public function tearDown()
-	{
-		$this->stop();
-		TestTree::remove($this->base);
-	}
+    public function tearDown()
+    {
+        $this->stop();
+        TestTree::remove($this->base);
+    }
 
-	private function stop()
-	{
-		if ($this->daemon !== null) {
-			$this->daemon->stop();
-			$this->daemon = null;
-		}
-		if ($this->server !== null) $this->server->close();
-		$this->server = null;
-	}
+    public function testAMagnetAlreadyLoadedIsADuplicateNotAnAddition()
+    {
+        $urls = 'magnet:?xt=urn:btih:' . self::LOADED . '&dn=loaded' . "\n"
+            . 'magnet:?xt=urn:btih:' . self::FRESH . "\n"
+            . 'magnet:?xt=urn:btih:' . strtolower(self::FRESH);
+        $results = $this->add(
+            [self::LOADED],
+            3,
+            'application/x-www-form-urlencoded',
+            'url=' . rawurlencode($urls),
+        );
+        $this->assertEquals(
+            ['Duplicate', 'Success', 'Duplicate'],
+            $results,
+            'the loaded magnet and the second copy of the new one are duplicates: ' . json_encode($results),
+        );
+        $this->assertEquals(3, $this->loadCalls(), 'each magnet was still sent');
+    }
 
-	/**
-	 * A single file torrent whose info dictionary hashes to the return value.
-	 * The private flag is a key of that dictionary.
-	 */
-	private function torrent(&$hash, $private = false)
-	{
-		$info = 'd6:lengthi1e4:name5:a.bin12:piece lengthi16384e6:pieces20:'
-			. str_repeat("\x01", 20) . ($private ? '7:privatei1e' : '') . 'e';
-		$hash = strtoupper(sha1($info));
-		$announce = 'http://127.0.0.1:1/announce';
-		return 'd8:announce' . strlen($announce) . ':' . $announce . '4:info' . $info . 'e';
-	}
+    public function testAnUploadedTorrentAlreadyLoadedIsADuplicateAndNotKept()
+    {
+        $results = $this->upload(true, ['one.torrent']);
+        $this->assertEquals(
+            ['Duplicate'],
+            $results,
+            'an upload of a loaded torrent is a duplicate: ' . json_encode($results),
+        );
+        $this->assertEquals(1, $this->loadCalls(), 'the upload was still sent');
+        $this->assertEquals([], $this->kept(), 'and the uploaded copy is not kept');
+    }
 
-	/**
-	 * Sends one request to addtorrent.php, with a daemon that has the $loaded
-	 * hashes and answers $loads loads, and returns the result[] values it
-	 * redirects with. $loads is a count of loads answered the way rtorrent
-	 * answers an accepted one, or the list of reply entries to answer them
-	 * with when the answer itself is the subject.
-	 */
-	private function add($loaded, $loads, $contentType, $body)
-	{
-		$this->stop();
-		$root = realpath(__DIR__ . '/../..');
-		$replies = array_merge(array($loaded),
-			is_array($loads) ? $loads : array_fill(0, $loads, array(0)));
-		// An install whose interface has been opened has a settings cache.
-		// This script is driven against a profile of its own, so leave one
-		// there rather than have it probe and spend the replies below.
-		RtorrentProbeFixture::warmSettingsCache($this->base . '/profile');
-		$this->daemon = new FakeRtorrentDaemon($replies, $this->base . '/calls.log');
+    public function testTheSecondCopyInOneUploadIsADuplicate()
+    {
+        $results = $this->upload(false, ['one.torrent', 'two.torrent']);
+        $this->assertEquals(
+            ['Success', 'Duplicate'],
+            $results,
+            'the second copy of the same torrent is a duplicate: ' . json_encode($results),
+        );
+        $this->assertEquals(2, $this->loadCalls(), 'both uploads were sent');
+        $this->assertEquals(
+            ['one.torrent'],
+            $this->kept(),
+            'only the upload that was added is kept: ' . json_encode($this->kept()),
+        );
+    }
 
-		$router = $this->base . '/router.php';
-		file_put_contents($router, "<?php\n"
-			. '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->base . '/profile', true) . ";\n"
-			. 'require_once(' . var_export($root . '/conf/config.php', true) . ");\n"
-			. '$scgi_host = "127.0.0.1";' . "\n"
-			. '$scgi_port = ' . $this->daemon->port() . ";\n"
-			. '$rpcTimeOut = 10;' . "\n"
-			. '$rpcLogCalls = false;' . "\n"
-			. '$saveUploadedTorrents = true;' . "\n"
-			. 'chdir(' . var_export($root . '/php', true) . ");\n"
-			. 'require(' . var_export($root . '/php/addtorrent.php', true) . ");\n"
-			. "return true;\n");
+    /**
+     * The uploaded copy is addtorrent.php's own file, so with
+     * $saveUploadedTorrents off sendTorrent() deletes it.
+     */
+    public function testAnAddedUploadIsNotKeptWhenUploadsAreNotSaved()
+    {
+        $this->saveUploads = false;
+        $results = $this->upload(false, ['one.torrent']);
+        $this->assertEquals(['Success'], $results, 'the upload is added: ' . json_encode($results));
+        $this->assertEquals(
+            [],
+            $this->kept(),
+            'and its uploaded copy is not kept: ' . json_encode($this->kept()),
+        );
+    }
 
-		$this->server = TestHttpServer::start($this->base, array(), PhpProcess::sameIni(), $router);
-		$response = TestHttpServer::rawPost($this->server->port(), '/php/addtorrent.php', $body, $contentType);
-		if (!isset($response['headers']['location'])
-			|| !preg_match('`^[^?]*\?(.*)$`', $response['headers']['location'], $location)) {
-			return array('no redirect: ' . $response['body']);
-		}
-		parse_str($location[1], $query);
-		return isset($query['result']) ? $query['result'] : array();
-	}
+    public function testAnUploadRtorrentRefusesIsFailedAndNotKept()
+    {
+        $results = $this->upload(
+            false,
+            ['one.torrent'],
+            [FakeRtorrentDaemon::fault('Could not create download')],
+        );
+        $this->assertEquals(
+            ['Failed'],
+            $results,
+            'a load rtorrent refused is a failure: ' . json_encode($results),
+        );
+        $this->assertEquals(1, $this->loadCalls(), 'the upload was still sent');
+        $this->assertEquals(
+            [],
+            $this->kept(),
+            'and the refused copy is not kept: ' . json_encode($this->kept()),
+        );
+    }
 
-	private function loadCalls()
-	{
-		$calls = $this->daemon->calls();
-		$this->assertEquals('download_list', isset($calls[0]) ? $calls[0] : null,
-			'the loaded hashes are read before anything is loaded: ' . implode(', ', $calls));
-		return count(array_filter($calls, function($call) {
-			return (strpos($call, 'load') === 0);
-		}));
-	}
+    public function testAMagnetRtorrentRefusesIsFailed()
+    {
+        $results = $this->add(
+            [self::LOADED],
+            [FakeRtorrentDaemon::fault('Could not create download')],
+            'application/x-www-form-urlencoded',
+            'url=' . rawurlencode('magnet:?xt=urn:btih:' . self::FRESH),
+        );
+        $this->assertEquals(
+            ['Failed'],
+            $results,
+            'a magnet rtorrent refused is a failure: ' . json_encode($results),
+        );
+        $this->assertEquals(1, $this->loadCalls(), 'the magnet was still sent');
+    }
 
-	public function testAMagnetAlreadyLoadedIsADuplicateNotAnAddition()
-	{
-		$urls = 'magnet:?xt=urn:btih:' . self::LOADED . '&dn=loaded' . "\n"
-			. 'magnet:?xt=urn:btih:' . self::FRESH . "\n"
-			. 'magnet:?xt=urn:btih:' . strtolower(self::FRESH);
-		$results = $this->add(array(self::LOADED), 3, 'application/x-www-form-urlencoded',
-			'url=' . rawurlencode($urls));
-		$this->assertEquals(array('Duplicate', 'Success', 'Duplicate'), $results,
-			'the loaded magnet and the second copy of the new one are duplicates: ' . json_encode($results));
-		$this->assertEquals(3, $this->loadCalls(), 'each magnet was still sent');
-	}
+    /**
+     * Randomizing the info hash adds a key to the info dictionary, so the
+     * torrent gets a new info hash. The tracker of a private torrent knows it
+     * only by its info hash and refuses a randomized copy as unregistered, so
+     * a private torrent is sent as it is.
+     */
+    public function testRandomizingLeavesAPrivateTorrentsHashAlone()
+    {
+        $this->torrent($hash, true);
+        $results = $this->upload(true, ['one.torrent'], null, ['randomize_hash' => '1'], true);
+        $this->assertEquals($hash, $this->sentHash(), 'rtorrent was sent the private torrent with its own hash');
+        $this->assertEquals(
+            ['Duplicate'],
+            $results,
+            'so a loaded one is still a duplicate: ' . json_encode($results),
+        );
+    }
 
-	private function upload($loaded, $names, $loads = null, $fields = array(), $private = false)
-	{
-		foreach ($this->kept() as $file) {
-			unlink($this->base . '/profile/torrents/' . $file);
-		}
-		$torrent = $this->torrent($hash, $private);
-		$boundary = 'dup' . md5($torrent);
-		$body = '';
-		foreach ($fields as $field => $value) {
-			$body .= '--' . $boundary . "\r\n"
-				. 'Content-Disposition: form-data; name="' . $field . '"' . "\r\n\r\n" . $value . "\r\n";
-		}
-		foreach ($names as $name) {
-			$body .= '--' . $boundary . "\r\n"
-				. 'Content-Disposition: form-data; name="torrent_file[]"; filename="' . $name . '"' . "\r\n"
-				. "Content-Type: application/x-bittorrent\r\n\r\n" . $torrent . "\r\n";
-		}
-		$body .= '--' . $boundary . "--\r\n";
-		return $this->add($loaded ? array(self::LOADED, $hash) : array(self::LOADED),
-			$loads === null ? count($names) : $loads,
-			'multipart/form-data; boundary=' . $boundary, $body);
-	}
+    public function testRandomizingStillGivesAPublicTorrentANewHash()
+    {
+        $this->torrent($hash);
+        $results = $this->upload(true, ['one.torrent'], null, ['randomize_hash' => '1']);
+        $sent = $this->sentHash();
+        $this->assertTrue(
+            ($sent !== null) && ($sent !== $hash),
+            'rtorrent was sent the public torrent with a new hash: ' . json_encode($sent),
+        );
+        $this->assertEquals(
+            ['Success'],
+            $results,
+            'so a loaded one is added as a new torrent: ' . json_encode($results),
+        );
+    }
 
-	private function kept()
-	{
-		return array_values(array_diff(scandir($this->base . '/profile/torrents'), array('.', '..')));
-	}
+    public function testTheResultPageShowsADuplicateAsAnAlert()
+    {
+        $root = realpath(__DIR__ . '/../..');
+        $driver = $this->base . '/drive-result.php';
+        file_put_contents($driver, "<?php\n"
+            . '$_REQUEST = array("result" => array("Duplicate"), "name" => array("x.torrent"));' . "\n"
+            . 'chdir(' . var_export($root . '/php', true) . ");\n"
+            . 'require(' . var_export($root . '/php/addtorrent.php', true) . ");\n");
+        $output = shell_exec(escapeshellarg(PHP_BINARY) . ' -d error_reporting=0 ' . escapeshellarg($driver));
+        $this->assertEquals(
+            'noty("x.torrent - "+theUILang["addTorrent"+"Duplicate"],"alert");',
+            $output,
+            'a duplicate is named with its own wording in the alert style',
+        );
+    }
 
-	/** The info hash of the torrent rtorrent was sent: the load is the only call with a base64 value. */
-	private function sentHash()
-	{
-		foreach ($this->daemon->bodies() as $body) {
-			if (preg_match('`<base64>([^<]*)</base64>`', $body, $match)) {
-				$torrent = new Torrent(base64_decode($match[1]));
-				return $torrent->hash_info();
-			}
-		}
-		return null;
-	}
+    private function stop()
+    {
+        if ($this->daemon !== null) {
+            $this->daemon->stop();
+            $this->daemon = null;
+        }
+        if ($this->server !== null) {
+            $this->server->close();
+        }
+        $this->server = null;
+    }
 
-	public function testAnUploadedTorrentAlreadyLoadedIsADuplicateAndNotKept()
-	{
-		$results = $this->upload(true, array('one.torrent'));
-		$this->assertEquals(array('Duplicate'), $results,
-			'an upload of a loaded torrent is a duplicate: ' . json_encode($results));
-		$this->assertEquals(1, $this->loadCalls(), 'the upload was still sent');
-		$this->assertEquals(array(), $this->kept(), 'and the uploaded copy is not kept');
-	}
+    /**
+     * A single file torrent whose info dictionary hashes to the return value.
+     * The private flag is a key of that dictionary.
+     */
+    private function torrent(&$hash, $private = false)
+    {
+        $info = 'd6:lengthi1e4:name5:a.bin12:piece lengthi16384e6:pieces20:'
+            . str_repeat("\x01", 20) . ($private ? '7:privatei1e' : '') . 'e';
+        $hash = strtoupper(sha1($info));
+        $announce = 'http://127.0.0.1:1/announce';
+        return 'd8:announce' . strlen($announce) . ':' . $announce . '4:info' . $info . 'e';
+    }
 
-	public function testTheSecondCopyInOneUploadIsADuplicate()
-	{
-		$results = $this->upload(false, array('one.torrent', 'two.torrent'));
-		$this->assertEquals(array('Success', 'Duplicate'), $results,
-			'the second copy of the same torrent is a duplicate: ' . json_encode($results));
-		$this->assertEquals(2, $this->loadCalls(), 'both uploads were sent');
-		$this->assertEquals(array('one.torrent'), $this->kept(),
-			'only the upload that was added is kept: ' . json_encode($this->kept()));
-	}
+    /**
+     * Sends one request to addtorrent.php, with a daemon that has the $loaded
+     * hashes and answers $loads loads, and returns the result[] values it
+     * redirects with. $loads is a count of loads answered the way rtorrent
+     * answers an accepted one, or the list of reply entries to answer them
+     * with when the answer itself is the subject.
+     */
+    private function add($loaded, $loads, $contentType, $body)
+    {
+        $this->stop();
+        $root = realpath(__DIR__ . '/../..');
+        $replies = array_merge(
+            [$loaded],
+            is_array($loads) ? $loads : array_fill(0, $loads, [0]),
+        );
+        // An install whose interface has been opened has a settings cache.
+        // This script is driven against a profile of its own, so leave one
+        // there rather than have it probe and spend the replies below.
+        RtorrentProbeFixture::warmSettingsCache($this->base . '/profile');
+        $this->daemon = new FakeRtorrentDaemon($replies, $this->base . '/calls.log');
 
-	public function testAnUploadRtorrentRefusesIsFailedAndNotKept()
-	{
-		$results = $this->upload(false, array('one.torrent'),
-			array(FakeRtorrentDaemon::fault('Could not create download')));
-		$this->assertEquals(array('Failed'), $results,
-			'a load rtorrent refused is a failure: ' . json_encode($results));
-		$this->assertEquals(1, $this->loadCalls(), 'the upload was still sent');
-		$this->assertEquals(array(), $this->kept(),
-			'and the refused copy is not kept: ' . json_encode($this->kept()));
-	}
+        $router = $this->base . '/router.php';
+        file_put_contents($router, "<?php\n"
+            . '$_ENV[\'RU_PROFILE_PATH\'] = ' . var_export($this->base . '/profile', true) . ";\n"
+            . 'require_once(' . var_export($root . '/conf/config.php', true) . ");\n"
+            . '$scgi_host = "127.0.0.1";' . "\n"
+            . '$scgi_port = ' . $this->daemon->port() . ";\n"
+            . '$rpcTimeOut = 10;' . "\n"
+            . '$rpcLogCalls = false;' . "\n"
+            . '$saveUploadedTorrents = ' . var_export($this->saveUploads, true) . ";\n"
+            . 'chdir(' . var_export($root . '/php', true) . ");\n"
+            . 'require(' . var_export($root . '/php/addtorrent.php', true) . ");\n"
+            . "return true;\n");
 
-	public function testAMagnetRtorrentRefusesIsFailed()
-	{
-		$results = $this->add(array(self::LOADED),
-			array(FakeRtorrentDaemon::fault('Could not create download')),
-			'application/x-www-form-urlencoded',
-			'url=' . rawurlencode('magnet:?xt=urn:btih:' . self::FRESH));
-		$this->assertEquals(array('Failed'), $results,
-			'a magnet rtorrent refused is a failure: ' . json_encode($results));
-		$this->assertEquals(1, $this->loadCalls(), 'the magnet was still sent');
-	}
+        $this->server = TestHttpServer::start($this->base, [], PhpProcess::sameIni(), $router);
+        $response = TestHttpServer::rawPost($this->server->port(), '/php/addtorrent.php', $body, $contentType);
+        if (!isset($response['headers']['location'])
+            || !preg_match('`^[^?]*\?(.*)$`', $response['headers']['location'], $location)) {
+            return ['no redirect: ' . $response['body']];
+        }
+        parse_str($location[1], $query);
+        return isset($query['result']) ? $query['result'] : [];
+    }
 
-	/**
-	 * Randomizing the info hash adds a key to the info dictionary, so the
-	 * torrent gets a new info hash. The tracker of a private torrent knows it
-	 * only by its info hash and refuses a randomized copy as unregistered, so
-	 * a private torrent is sent as it is.
-	 */
-	public function testRandomizingLeavesAPrivateTorrentsHashAlone()
-	{
-		$this->torrent($hash, true);
-		$results = $this->upload(true, array('one.torrent'), null, array('randomize_hash' => '1'), true);
-		$this->assertEquals($hash, $this->sentHash(), 'rtorrent was sent the private torrent with its own hash');
-		$this->assertEquals(array('Duplicate'), $results,
-			'so a loaded one is still a duplicate: ' . json_encode($results));
-	}
+    private function loadCalls()
+    {
+        $calls = $this->daemon->calls();
+        $this->assertEquals(
+            'download_list',
+            isset($calls[0]) ? $calls[0] : null,
+            'the loaded hashes are read before anything is loaded: ' . implode(', ', $calls),
+        );
+        return count(array_filter($calls, function ($call) {
+            return (strpos($call, 'load') === 0);
+        }));
+    }
 
-	public function testRandomizingStillGivesAPublicTorrentANewHash()
-	{
-		$this->torrent($hash);
-		$results = $this->upload(true, array('one.torrent'), null, array('randomize_hash' => '1'));
-		$sent = $this->sentHash();
-		$this->assertTrue(($sent !== null) && ($sent !== $hash),
-			'rtorrent was sent the public torrent with a new hash: ' . json_encode($sent));
-		$this->assertEquals(array('Success'), $results,
-			'so a loaded one is added as a new torrent: ' . json_encode($results));
-	}
+    private function upload($loaded, $names, $loads = null, $fields = [], $private = false)
+    {
+        foreach ($this->kept() as $file) {
+            unlink($this->base . '/profile/torrents/' . $file);
+        }
+        $torrent = $this->torrent($hash, $private);
+        $boundary = 'dup' . md5($torrent);
+        $body = '';
+        foreach ($fields as $field => $value) {
+            $body .= '--' . $boundary . "\r\n"
+                . 'Content-Disposition: form-data; name="' . $field . '"' . "\r\n\r\n" . $value . "\r\n";
+        }
+        foreach ($names as $name) {
+            $body .= '--' . $boundary . "\r\n"
+                . 'Content-Disposition: form-data; name="torrent_file[]"; filename="' . $name . '"' . "\r\n"
+                . "Content-Type: application/x-bittorrent\r\n\r\n" . $torrent . "\r\n";
+        }
+        $body .= '--' . $boundary . "--\r\n";
+        return $this->add(
+            $loaded ? [self::LOADED, $hash] : [self::LOADED],
+            $loads === null ? count($names) : $loads,
+            'multipart/form-data; boundary=' . $boundary,
+            $body,
+        );
+    }
 
-	public function testTheResultPageShowsADuplicateAsAnAlert()
-	{
-		$root = realpath(__DIR__ . '/../..');
-		$driver = $this->base . '/drive-result.php';
-		file_put_contents($driver, "<?php\n"
-			. '$_REQUEST = array("result" => array("Duplicate"), "name" => array("x.torrent"));' . "\n"
-			. 'chdir(' . var_export($root . '/php', true) . ");\n"
-			. 'require(' . var_export($root . '/php/addtorrent.php', true) . ");\n");
-		$output = shell_exec(escapeshellarg(PHP_BINARY) . ' -d error_reporting=0 ' . escapeshellarg($driver));
-		$this->assertEquals('noty("x.torrent - "+theUILang["addTorrent"+"Duplicate"],"alert");', $output,
-			'a duplicate is named with its own wording in the alert style');
-	}
+    private function kept()
+    {
+        return array_values(array_diff(scandir($this->base . '/profile/torrents'), ['.', '..']));
+    }
+
+    /** The info hash of the torrent rtorrent was sent: the load is the only call with a base64 value. */
+    private function sentHash()
+    {
+        foreach ($this->daemon->bodies() as $body) {
+            if (preg_match('`<base64>([^<]*)</base64>`', $body, $match)) {
+                $torrent = new Torrent(base64_decode($match[1]));
+                return $torrent->hash_info();
+            }
+        }
+        return null;
+    }
 }
