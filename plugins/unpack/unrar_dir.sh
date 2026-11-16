@@ -3,9 +3,10 @@
 # $1 - unrar
 # $2 - input directory with tail slash
 # $3 - output directory with tail slash
-# $5 - archive files to delete
+# $5 - unused
 # $6 - unpack temp dir
 # $7-$10 - for place.php, see stage.sh
+# $11... - archives to delete after a successful unpack
 
 . "$(dirname "$0")/stage.sh"
 
@@ -15,6 +16,10 @@ ret=0
 # $3 - its place in the output, empty or with tail slash
 process_directory()
 {
+	if ! unpack_rar_path "$2" ; then
+		ret=1
+		return "$ret"
+	fi
 	# -ol-: never a symbolic link, see unrar_file.sh.
 	unpack_rar_links "$1" "$2."
 	unpack_extract "$3" "$1" x -ai -c- -kb -o+ -ol- -p- -y -v -- "$2."
@@ -34,14 +39,6 @@ process_directory()
 process_directory "$1" "$2" ""
 ret=$?
 
-if [ $ret -eq 0 ] && [ "$5" != '' ] ; then
-	OIFS=$IFS
-	IFS=';'
-	for file in "$5"
-	do
-		rm $file
-	done
-	IFS=$OIFS
-fi
+[ $ret -eq 0 ] && unpack_delete "$@"
 
 exit $ret

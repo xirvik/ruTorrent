@@ -3,9 +3,10 @@
 # $1 - unzip
 # $2 - input directory with tail slash
 # $3 - output directory with tail slash
-# $5 - archive files to delete
+# $5 - unused
 # $6 - unpack temp dir
 # $7-$10 - for place.php, see stage.sh
+# $11... - archives to delete after a successful unpack
 
 . "$(dirname "$0")/stage.sh"
 
@@ -25,8 +26,12 @@ process_directory()
 {
         for fn in "$2"*.zip ; do
         	if [ -f "${fn}" ] && [ -r "${fn}" ] ; then
-			unpack_extract "$3" unzip_into "$1" -o "${fn}" -d
-			last=$?
+			if unpack_zip_pattern "${fn}" ; then
+				unpack_extract "$3" unzip_into "$1" -o "$unpack_archive_pattern" -d
+				last=$?
+			else
+				last=1
+			fi
 			[ $last -ge 1 ] && ret=$last
 		fi
 	done
@@ -45,14 +50,6 @@ process_directory "$1" "$2" ""
 ret=$?
 
 [ $ret -eq 0 ] && echo 'All OK'
-if [ $ret -eq 0 ] && [ "$5" != '' ] ; then
-	OIFS=$IFS
-	IFS=';'
-	for file in "$5"
-	do
-		rm $file
-	done
-	IFS=$OIFS
-fi
+[ $ret -eq 0 ] && unpack_delete "$@"
 
 exit $ret

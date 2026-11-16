@@ -33,8 +33,11 @@ class UnpackScriptsTest extends TestCase
     {
         $this->fresh();
         $unzip = $this->zipsWithALinkThenAFileBelowIt();
-        $run = $this->script('unzip_dir.sh', [$unzip, $this->base . '/in/', $this->base . '/out/', '',
-            $this->base . '/in/a.zip;' . $this->base . '/in/b.zip;']);
+        $run = $this->script(
+            'unzip_dir.sh',
+            [$unzip, $this->base . '/in/', $this->base . '/out/'],
+            [$this->base . '/in/a.zip', $this->base . '/in/b.zip'],
+        );
         $this->assertZipLinkRefused($run, $this->base . '/out', $this->base . '/out');
     }
 
@@ -44,7 +47,7 @@ class UnpackScriptsTest extends TestCase
         $unzip = $this->zipsWithALinkThenAFileBelowIt();
         // An output that is not there yet is made.
         $run = $this->script('unzip_dir.sh', [$unzip, $this->base . '/in/', $this->base . '/out/new/', '',
-            $this->base . '/in/a.zip;' . $this->base . '/in/b.zip;', $this->base . '/temp/']);
+            '', $this->base . '/temp/'], [$this->base . '/in/a.zip', $this->base . '/in/b.zip']);
         $this->assertZipLinkRefused($run, $this->base . '/temp', $this->base . '/out/new');
         $this->assertTrue(!file_exists($this->base . '/temp'), 'the temp directory is removed');
     }
@@ -58,8 +61,11 @@ class UnpackScriptsTest extends TestCase
             . "\n" . '[ "$1" = x ] || exit 0; case " $* " in *" -ol- "*) ;;'
             . ' *) ln -s real "$dest/lib.so"; ln -s real "$dest/winlink"; ln -s real "$dest/junction" ;; esac');
         file_put_contents($this->base . '/in/a.rar', 'rar');
-        $run = $this->script('unrar_file.sh', [$unrar, $this->base . '/in/a.rar', $this->base . '/out/', '',
-            $this->base . '/in/a.rar']);
+        $run = $this->script(
+            'unrar_file.sh',
+            [$unrar, $this->base . '/in/a.rar', $this->base . '/out/'],
+            [$this->base . '/in/a.rar'],
+        );
         $this->assertEquals(1, $run['code'], 'the unpack fails: ' . json_encode($run));
         $args = file($this->base . '/unrar.args', FILE_IGNORE_NEW_LINES);
         $this->assertTrue(
@@ -176,6 +182,246 @@ class UnpackScriptsTest extends TestCase
         $this->assertTrue($run['err'] === '' && $run['log'] === [], 'and nothing is reported: ' . json_encode($run));
     }
 
+    public function testZipArchivePatternsKeepLiteralNames()
+    {
+        $this->fresh();
+        $input = $this->base . '/in/parent*[x]/';
+        mkdir($input);
+        foreach (["Al [1].zip" => "Al [[]1].zip", "x*y.zip" => "x[*]y.zip",
+            "q?r.zip" => "q[?]r.zip", "a\\b*.zip" => "a\\\\b[*].zip",
+            "обычный file.zip" => "обычный file.zip", "a\\b.zip" => "a\\b.zip", "trailing*\n" => "trailing[*]\n"] as $name => $pattern) {
+            file_put_contents($input . $name, 'archive');
+            $unzip = $this->extractor('unzip', '[ "$2" = '
+                . Utility::escapeShellArg($input . $pattern) . ' ] || exit 5; echo true > "$dest/true"');
+            $run = $this->script('unzip_file.sh', [$unzip, $input . $name, $this->base . '/out/']);
+            $this->assertEquals(0, $run['code'], 'the literal archive is selected: ' . json_encode($run));
+            $this->assertEquals("true\n", file_get_contents($this->base . '/out/true'), 'the selected archive is placed');
+            unlink($this->base . '/out/true');
+            unlink($input . $name);
+        }
+    }
+
+    public function testRelativeZipNameIsEscaped()
+    {
+        $this->fresh();
+        file_put_contents($this->base . '/x*y.zip', 'zip');
+        $unzip = $this->extractor('unzip', '[ "$2" = "x[*]y.zip" ] || exit 5; echo true > "$dest/true"');
+        $run = $this->script('unzip_file.sh', [$unzip, 'x*y.zip', $this->base . '/out/']);
+        $this->assertEquals(0, $run['code'], 'a relative name is escaped: ' . json_encode($run));
+        $this->assertEquals("true\n", file_get_contents($this->base . '/out/true'), 'the archive is placed');
+    }
+
+    public function testZipDirectoryEscapesArchiveNames()
+    {
+        $this->fresh();
+        $input = $this->base . '/in/';
+        file_put_contents($input . 'x*y.zip', 'zip');
+        $unzip = $this->extractor('unzip', '[ "$2" = '
+            . Utility::escapeShellArg($input . 'x[*]y.zip') . ' ] || exit 5; echo true > "$dest/true"');
+        $run = $this->script('unzip_dir.sh', [$unzip, $input, $this->base . '/out/']);
+        $this->assertEquals(0, $run['code'], 'directory mode selects the literal archive: ' . json_encode($run));
+        $this->assertEquals("true\n", file_get_contents($this->base . '/out/true'), 'the selected archive is placed');
+    }
+
+    public function testZipPatternConversionFailureKeepsArchive()
+    {
+        $this->fresh();
+        $unzip = $this->extractor('unzip', 'exit 0');
+        file_put_contents($this->base . '/in/x*y.zip', 'zip');
+        file_put_contents($this->base . '/sed', "#!/bin/sh\nprintf partial\nexit 1\n");
+        chmod($this->base . '/sed', 0700);
+        $oldPath = getenv('PATH');
+        putenv('PATH=' . $this->base . ':' . $oldPath);
+        try {
+            $run = $this->script(
+                'unzip_file.sh',
+                [$unzip, $this->base . '/in/x*y.zip', $this->base . '/out/'],
+                [$this->base . '/in/x*y.zip'],
+            );
+            $dirRun = $this->script(
+                'unzip_dir.sh',
+                [$unzip, $this->base . '/in/', $this->base . '/out/'],
+                [$this->base . '/in/x*y.zip'],
+            );
+        } finally {
+            putenv('PATH=' . $oldPath);
+        }
+        $this->assertEquals(1, $run['code'], 'conversion failure refuses the unpack');
+        $this->assertEquals(1, $dirRun['code'], 'conversion failure refuses the directory unpack');
+        $this->assertTrue($this->calls('unzip') === [], 'unzip is not called with partial output');
+        $this->assertTrue(is_file($this->base . '/in/x*y.zip'), 'the archive is kept');
+        $this->assertTrue(strpos(implode('', $run['log']), 'reason=archive-name-unavailable') !== false, 'the log classifies the failure');
+    }
+
+    public function testRarWildcardPathsRefuseBeforeCallingUnrar()
+    {
+        $this->fresh();
+        $unrar = $this->extractor('unrar', 'exit 0');
+        foreach (['x*y.rar', 'q?r.rar', 'parent*/safe.rar'] as $name) {
+            if (strpos($name, '/') !== false) {
+                mkdir($this->base . '/in/parent*');
+            }
+            file_put_contents($this->base . '/in/' . $name, 'rar');
+            @unlink($this->base . '/errors.log');
+            $run = $this->script(
+                'unrar_file.sh',
+                [$unrar, $this->base . '/in/' . $name, $this->base . '/out/'],
+                [$this->base . '/in/' . $name],
+            );
+            $this->assertEquals(1, $run['code'], 'a wildcard path is refused: ' . json_encode($run));
+            $this->assertTrue(strpos($run['err'], 'rename') !== false, 'the task output asks for a rename');
+            $this->assertTrue(strpos(implode('', $run['log']), 'reason=archive-name-pattern') !== false, 'the log classifies the refusal');
+            $this->assertTrue($this->calls('unrar') === [], 'unrar is never called');
+            $this->assertTrue(is_file($this->base . '/in/' . $name), 'the refused archive is kept');
+            unlink($this->base . '/in/' . $name);
+        }
+        $run = $this->script('unrar_dir.sh', [$unrar, $this->base . '/in/parent*/', $this->base . '/out/']);
+        $this->assertEquals(1, $run['code'], 'a wildcard directory is refused');
+        $this->assertTrue($this->calls('unrar') === [], 'the directory is not listed or extracted');
+    }
+
+    public function testMixedUnpackKeepsBothArchivesWhenRarPathIsRefused()
+    {
+        $this->fresh();
+        $dir = $this->base . '/in/parent*/';
+        mkdir($dir);
+        file_put_contents($dir . 'a.rar', 'rar');
+        file_put_contents($dir . 'a.zip', 'zip');
+        $unrar = $this->extractor('unrar', 'exit 0');
+        $unzip = $this->extractor('unzip', 'echo z > "$dest/z"');
+        $run = $this->script(
+            'unall_dir.sh',
+            [$unrar, $dir, $this->base . '/out/', $unzip],
+            [$dir . 'a.rar', $dir . 'a.zip'],
+        );
+        $this->assertEquals(1, $run['code'], 'the mixed unpack is refused');
+        $this->assertTrue(is_file($dir . 'a.rar') && is_file($dir . 'a.zip'), 'both archives are kept');
+    }
+
+    public function testMixedUnpackKeepsBothArchivesWhenZipPatternFails()
+    {
+        $this->fresh();
+        $dir = $this->base . '/in/';
+        file_put_contents($dir . 'a.rar', 'rar');
+        file_put_contents($dir . 'x*y.zip', 'zip');
+        $unrar = $this->extractor('unrar', 'exit 0');
+        $unzip = $this->extractor('unzip', 'echo z > "$dest/z"');
+        file_put_contents($this->base . '/sed', "#!/bin/sh\nexit 1\n");
+        chmod($this->base . '/sed', 0700);
+        $oldPath = getenv('PATH');
+        putenv('PATH=' . $this->base . ':' . $oldPath);
+        try {
+            $run = $this->script(
+                'unall_dir.sh',
+                [$unrar, $dir, $this->base . '/out/', $unzip],
+                [$dir . 'a.rar', $dir . 'x*y.zip'],
+            );
+        } finally {
+            putenv('PATH=' . $oldPath);
+        }
+        $this->assertEquals(1, $run['code'], 'the mixed unpack is refused');
+        $this->assertTrue(is_file($dir . 'a.rar') && is_file($dir . 'x*y.zip'), 'both archives are kept');
+    }
+
+    public function testMixedUnpackDeletesOnlyTheListedArchivesAfterBothSucceed()
+    {
+        $this->fresh();
+        $dir = $this->base . '/in/';
+        file_put_contents($dir . 'a.rar', 'rar');
+        file_put_contents($dir . 'x*y.zip', 'zip');
+        file_put_contents($dir . 'xzy.zip', 'unrelated');
+        $unrar = $this->extractor('unrar', 'exit 0');
+        $unzip = $this->extractor('unzip', 'exit 0');
+        $run = $this->script(
+            'unall_dir.sh',
+            [$unrar, $dir, $this->base . '/out/', $unzip],
+            [$dir . 'a.rar', $dir . 'x*y.zip'],
+        );
+        $this->assertEquals(0, $run['code'], 'both extractors succeed');
+        $this->assertTrue(!file_exists($dir . 'a.rar') && !file_exists($dir . 'x*y.zip'), 'listed archives are deleted');
+        $this->assertTrue(is_file($dir . 'xzy.zip'), 'an unlisted matching path is kept');
+    }
+
+    public function testDirectoryCleanupDoesNotExpandArchiveNames()
+    {
+        $this->fresh();
+        foreach (['zip', 'rar'] as $format) {
+            $dir = $this->base . '/in/' . (($format === 'zip') ? 'zip*' : 'rar') . '/';
+            mkdir($dir);
+            file_put_contents($dir . 'x*y.' . $format, 'archive');
+            file_put_contents($dir . 'xzy.' . $format, 'decoy');
+            $tool = $this->extractor('un' . $format, 'exit 0');
+            $run = $this->script(
+                'un' . $format . '_dir.sh',
+                [$tool, $dir, $this->base . '/out/'],
+                [$dir . 'x*y.' . $format],
+            );
+            $this->assertEquals(0, $run['code'], 'the directory unpack succeeds');
+            $this->assertTrue(!file_exists($dir . 'x*y.' . $format), 'the selected archive is removed');
+            $this->assertTrue(is_file($dir . 'xzy.' . $format), 'the unrelated archive remains');
+        }
+    }
+
+    /**
+     * Each archive to delete is an argument of its own, so a name holding a
+     * ';' or a newline is deleted whole, and nothing named like a piece of it
+     * is touched. The relative pieces would be resolved against the
+     * script's working directory, the test's base.
+     */
+    public function testArchivesWhoseNamesHoldASeparatorAreDeletedWhole()
+    {
+        $this->fresh();
+        $dir = $this->base . "/in/Show;1\nx/";
+        mkdir($dir);
+        $archives = [$dir . 'a;b.rar', $dir . "c\nd.zip"];
+        $decoys = [$this->base . '/in/Show', $this->base . "/1\nx/a", $this->base . '/b.rar',
+            $this->base . '/in/Show;1', $this->base . "/d.zip", $dir . 'a', $dir . 'c'];
+        foreach ($archives as $archive) {
+            file_put_contents($archive, 'archive');
+        }
+        mkdir($this->base . "/1\nx");
+        foreach ($decoys as $decoy) {
+            file_put_contents($decoy, 'decoy');
+        }
+        $unrar = $this->extractor('unrar', 'exit 0');
+        $unzip = $this->extractor('unzip', 'exit 0');
+        $run = $this->script('unall_dir.sh', [$unrar, $dir, $this->base . '/out/', $unzip], $archives);
+        $this->assertEquals(0, $run['code'], 'the unpack succeeds: ' . json_encode($run));
+        $this->assertTrue(!file_exists($archives[0]) && !file_exists($archives[1]), 'both archives are deleted: '
+            . json_encode(UnpackPlaceFixture::tree($this->base . '/in')));
+        foreach ($decoys as $decoy) {
+            $this->assertTrue(@file_get_contents($decoy) === 'decoy', 'a file named like a piece of a name is kept: ' . $decoy);
+        }
+        foreach (['unrar_file.sh' => 'e;f.rar', 'unzip_file.sh' => "g;h\n.zip"] as $script => $name) {
+            file_put_contents($this->base . '/in/' . $name, 'archive');
+            file_put_contents($this->base . '/in/' . $name . ';', 'decoy');
+            $tool = ($script === 'unrar_file.sh') ? $unrar : $unzip;
+            $run = $this->script(
+                $script,
+                [$tool, $this->base . '/in/' . $name, $this->base . '/out/'],
+                [$this->base . '/in/' . $name],
+            );
+            $this->assertEquals(0, $run['code'], $script . ' succeeds: ' . json_encode($run));
+            $this->assertTrue(!file_exists($this->base . '/in/' . $name), $script . ' deletes ' . json_encode($name));
+            $this->assertTrue(
+                @file_get_contents($this->base . '/in/' . $name . ';') === 'decoy',
+                'and keeps the file named like it with a ";" after it',
+            );
+        }
+    }
+
+    public function testNothingIsDeletedWhenNoArchiveIsListed()
+    {
+        $this->fresh();
+        file_put_contents($this->base . '/in/a.zip', 'zip');
+        $unzip = $this->extractor('unzip', 'exit 0');
+        foreach (['unzip_file.sh' => $this->base . '/in/a.zip', 'unzip_dir.sh' => $this->base . '/in/'] as $script => $input) {
+            $run = $this->script($script, [$unzip, $input, $this->base . '/out/']);
+            $this->assertTrue($run['code'] === 0 && $run['err'] === '', $script . ' succeeds quietly: ' . json_encode($run));
+            $this->assertTrue(is_file($this->base . '/in/a.zip'), 'and keeps the archive');
+        }
+    }
+
     public function testAPrivateDirectoryThatCannotBeMadeIsRefusedAndLogged()
     {
         $this->fresh();
@@ -234,11 +480,16 @@ class UnpackScriptsTest extends TestCase
         return is_file($calls) ? file($calls, FILE_IGNORE_NEW_LINES) : [];
     }
 
-    /** Runs plugins/unpack/$script with the arguments unpack.php gives it. */
-    private function script($script, array $arguments)
+    /**
+     * Runs plugins/unpack/$script with the arguments unpack.php gives it:
+     * $arguments up to the temp directory, the four for place.php, then
+     * each archive to delete in $delete.
+     */
+    private function script($script, array $arguments, array $delete = [])
     {
         $arguments = array_pad($arguments, 6, '');
         array_push($arguments, $this->base . '/php', 'automatic', self::HASH, self::USER);
+        $arguments = array_merge($arguments, $delete);
         $process = proc_open(
             array_merge([dirname(__DIR__, 3) . '/plugins/unpack/' . $script], $arguments),
             [0 => ['file', '/dev/null', 'r'], 1 => ['file', $this->base . '/stdout', 'w'],

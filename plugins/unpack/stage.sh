@@ -7,7 +7,8 @@
 #
 # The scripts' $3 is the output directory, $6 the unpack temp directory if
 # any, and $7-$10 are for place.php: PHP, "automatic" or "manual", the
-# download's hash and the user.
+# download's hash and the user. Any arguments after those are the archives
+# to delete once the unpack has succeeded.
 
 unpack_output="$3"
 unpack_root="${6:-$3}"
@@ -36,6 +37,48 @@ unpack_rar_links()
 			seen[name] = 1
 			print "unpack: refused archive-symbolic-link: " name > "/dev/stderr"; n++ }
 		END { print n + 0 }')
+}
+
+# Called with the script's own arguments: the archives to delete are the
+# ones after the tenth, a path each, so no byte of a name can split it.
+unpack_delete()
+{
+	shift 10
+	for unpack_file ; do
+		rm -- "$unpack_file"
+	done
+}
+
+# UnRAR treats asterisks and question marks in the whole path as masks.
+unpack_rar_path()
+{
+	case "$1" in
+		*'*'*|*'?'*)
+			unpack_php refuse archive-name-pattern "$1"
+			printf '%s\n' 'unpack: archive not unpacked; rename the archive, its volumes and parent directories without * or ?' >&2
+			return 1 ;;
+	esac
+}
+
+# Info-ZIP treats the archive basename as a wildcard pattern. Keep its
+# directory literal and quote metacharacters only when pattern matching is used.
+unpack_zip_pattern()
+{
+	unpack_zip_name=${1##*/}
+	unpack_archive_pattern=$1
+	case "$unpack_zip_name" in
+		*'['*|*'*'*|*'?'*)
+			# Keep trailing newlines: manual unpack also accepts names without .zip.
+			unpack_zip_escaped=$(printf '%s' "$unpack_zip_name" | sed -e 's/\\/\\\\/g' -e 's/\[/[[]/g' -e 's/\*/[*]/g' -e 's/?/[?]/g' && printf '.') || {
+				unpack_php refuse archive-name-unavailable "$1"
+				return 1
+			}
+			unpack_zip_escaped=${unpack_zip_escaped%.}
+			case "$1" in
+				*/*) unpack_archive_pattern=${1%/*}/$unpack_zip_escaped ;;
+				*) unpack_archive_pattern=$unpack_zip_escaped ;;
+			esac ;;
+	esac
 }
 
 # Runs the extractor command "$2"... with a private directory, plus the

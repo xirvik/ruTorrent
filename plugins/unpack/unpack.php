@@ -122,6 +122,7 @@ class rUnpack
         }
 
         self::log("[Auto] Check torrent [$name] at [$basename] for archives");
+        $filesToDelete = [];
 
         if (is_dir($basename)) {
             $postfix = "_dir";
@@ -130,7 +131,6 @@ class rUnpack
             }
             $basename = FileUtil::addslash($basename);
 
-            $filesToDelete = "";
             $downloadname = FileUtil::addslash($downloadname);
             $Directory = new RecursiveDirectoryIterator($basename);
             $Iterator = new RecursiveIteratorIterator($Directory);
@@ -183,14 +183,18 @@ class rUnpack
             } else {
                 $randTempDirectory = "";
             }
-            $commands[] = escapeshellarg($rootPath . '/plugins/unpack/un' . $mode . $postfix . '.sh') . " "
+            $command = escapeshellarg($rootPath . '/plugins/unpack/un' . $mode . $postfix . '.sh') . " "
             . escapeshellarg($arh) . " "
             . escapeshellarg($basename) . " "
             . escapeshellarg($outPath) . " "
-            . escapeshellarg($pathToUnzip) . " "
-            . escapeshellarg($filesToDelete) . " "
+            . escapeshellarg($pathToUnzip) . " '' "
             . escapeshellarg($randTempDirectory)
             . self::placeArguments("automatic", $hash);
+            // The archives to delete follow, an argument each.
+            foreach ($filesToDelete as $file) {
+                $command .= " " . Utility::escapeShellArg($file);
+            }
+            $commands[] = $command;
             if ($cleanupAutoTasks) {
                 $commands[] = 'rm -r "${dir}"';
             }
@@ -242,14 +246,14 @@ class rUnpack
                 new rXMLRPCCommand("f.get_frozen_path", [$hash,intval($fileno)]),
             );
             if ($req->success()) {
-                $filename = $req->val[0];
+                $filename = rXMLRPCRequest::unescapeValue($req->val[0]);
                 if ($filename == '') {
                     $req = new rXMLRPCRequest([
                         new rXMLRPCCommand("d.open", $hash),
                         new rXMLRPCCommand("f.get_frozen_path", [$hash,intval($fileno)]),
                         new rXMLRPCCommand("d.close", $hash) ]);
                     if ($req->success()) {
-                        $filename = $req->val[1];
+                        $filename = rXMLRPCRequest::unescapeValue($req->val[1]);
                     }
                 }
 
@@ -284,16 +288,16 @@ class rUnpack
                     new rXMLRPCCommand("d.get_name", $hash) ],
             );
             if ($req->success()) {
-                $basename = $req->val[0];
-                $label = rawurldecode($req->val[1]);
-                $tname = $req->val[2];
+                $basename = rXMLRPCRequest::unescapeValue($req->val[0]);
+                $label = rawurldecode(rXMLRPCRequest::unescapeValue($req->val[1]));
+                $tname = rXMLRPCRequest::unescapeValue($req->val[2]);
                 if ($basename == '') {
                     $req = new rXMLRPCRequest([
                         new rXMLRPCCommand("d.open", $hash),
                         new rXMLRPCCommand("d.get_base_path", $hash),
                         new rXMLRPCCommand("d.close", $hash) ]);
                     if ($req->success()) {
-                        $basename = $req->val[1];
+                        $basename = rXMLRPCRequest::unescapeValue($req->val[1]);
                     }
                 }
                 self::log("[Manual] Check torrent [$tname] at [$basename] for archives");
@@ -390,16 +394,16 @@ class rUnpack
     {
         if (is_link($filePath)) {
             self::log("Unpack: SoftLink operation enabled. Deleting " . $filePath);
-            $filesToDelete .= $filePath . ";";
+            $filesToDelete[] = $filePath;
         } else {
             $stat = LFS::stat($filePath);
             if ($stat) {
                 if ($stat['nlink'] > 1) {
                     self::log("Unpack: HardLink operation enabled. Deleting " . $filePath);
-                    $filesToDelete .= $filePath . ";";
+                    $filesToDelete[] = $filePath;
                 } else {
                     self::log("Unpack: Copy operation enabled. Deleting " . $filePath);
-                    $filesToDelete .= $filePath . ";";
+                    $filesToDelete[] = $filePath;
                 }
             }
         }

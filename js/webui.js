@@ -4,7 +4,7 @@
  */
 
 var theWebUI = {
-	version: "5.3.22",
+	version: "5.3.23",
 	tables: {
 		trt: {
 			obj: new dxSTable(),
@@ -2607,6 +2607,8 @@ var theWebUI = {
 
 	clearSearch: function()
 	{
+		if($$("query").readOnly)
+			return;
 		$$("query").value = "";
 		theWebUI.updateQuickSearch();
 	},
@@ -2616,8 +2618,14 @@ var theWebUI = {
 		$$("query").blur();
 	},
 
+	updateSearchClear: function()
+	{
+		$$("query_clear").hidden = ($$("query").value === "" || $$("query").readOnly);
+	},
+
 	updateQuickSearch: function()
 	{
+		theWebUI.updateSearchClear();
 		theWebUI.categoryList.setQuickSearch(
 			theSearchEngines.current === -1 ? $$("query").value : null
 		);
@@ -2660,8 +2668,8 @@ var theWebUI = {
 		Ajax(qs instanceof rTorrentStub ? qs : this.url + qs, isASync, onComplite, onTimeout, onError, this.settings["webui.reqtimeout"]);
 	},
 
-	requestWithoutTimeout: function(qs, onComplite, isASync) {
-		Ajax(this.url + qs, isASync, onComplite, null, this.error, -1);
+	requestWithoutTimeout: function(qs, onComplite, isASync, onError) {
+		Ajax(this.url + qs, isASync, onComplite, null, onError || this.error, -1);
 	},
 
 	show: function()
