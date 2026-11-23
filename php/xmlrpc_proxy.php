@@ -98,7 +98,8 @@ class XMLRPCProxy
         'import', 'try_import',   // read a file of commands
         'schedule',               // and schedule2, schedule.remove, scheduler.*
         'log.',                   // log.execute, log.open_file, log.xmlrpc
-        'network.scgi',           // re-open the listener somewhere else
+        'network.scgi',           // re-open the listener somewhere else (but see
+        // $denyExceptions)
         'session.path.set',
         'directory.default.set',
         'catch',                  // evaluates its argument
@@ -106,13 +107,46 @@ class XMLRPCProxy
         'system.shutdown',        // and .normal / .quick -- answered by the xmlrpc-c
         // registry, not rtorrent's command map, so rtorrent's
         // own untrusted gate never sees it
+
+        // Commands that keep a command and run it later, or define new ones.
+        // A call of one is otherwise forwarded with its arguments unread, and
+        // what it stores runs when its event fires, on no connection at all.
+        'directory.watch.',       // .added / .ready: a command per new file
+        'view.filter',            // filter, filter.temp and filter_on, which
+        // writes "view.filter_download=<view name>" into an event key
+        'view.sort_',             // sort_new / sort_current
+        'view.event_',            // event_added / event_removed
+        'group.insert',           // and group.insert_persistent_view: methods
+        // and a scheduled task per group
+        'lua.',                   // lua.execute, lua.execute.str
+        'file.append',            // 0.9.8: caller text into a caller path
+    ];
+
+    // Members of a refused family that are not what the family is refused
+    // for. Exact canonical names, so a legacy spelling of one is let through
+    // with it and a command added to the family later is still refused.
+    //
+    // network.scgi.dont_route is a flag the commands that open the SCGI
+    // listener read when they open it (src/command_network.cc); reading or
+    // setting it opens nothing, and those commands stay refused. rtorrent
+    // 0.16.x marks the getter safe for untrusted callers. The Settings dialog
+    // reads it in every load and writes it when its checkbox changes, and a
+    // system.multicall with one refused member is refused whole, so without
+    // this the dialog cannot load through this filter at all.
+    //
+    // Only a prefix entry is excepted: a deny list that names one of these
+    // exactly still refuses it.
+    private static $denyExceptions = [
+        'network.scgi.dont_route',
+        'network.scgi.dont_route.set',
     ];
 
     // One canonical name per command, for the other spellings a daemon
-    // registers it under. php/methods-*.php and the table php/settings.php
-    // builds inline are where these come from: they are what rXMLRPCCommand
-    // puts every call through, so they are this tree's own statement of which
-    // spelling a given daemon takes.
+    // registers it under. Two sources: php/methods-*.php and the table
+    // php/settings.php builds inline, which rXMLRPCCommand puts every call
+    // through, and the redirects rtorrent registers itself (CMD2_REDIRECT in
+    // src/main.cc of 0.9.8, CMD_REDIRECT in 0.16), which a caller can name
+    // directly. tests/php/RtorrentCommandRedirectsFixture.php lists the second.
     //
     // Resolved before anything classifies a name, so a command is judged as
     // itself under every spelling the daemon answers to rather than once per
@@ -132,11 +166,20 @@ class XMLRPCProxy
         'system.method.set' => 'method.set',
         'system.method.set_key' => 'method.set_key',
         'set_directory' => 'directory.default.set',
+        'directory' => 'directory.default.set',
         'set_session' => 'session.path.set',
+        'session' => 'session.path.set',
+        'scgi_port' => 'network.scgi.open_port',
+        'scgi_local' => 'network.scgi.open_local',
         'get_scgi_dont_route' => 'network.scgi.dont_route',
         'set_scgi_dont_route' => 'network.scgi.dont_route.set',
         'd.set_directory' => 'd.directory.set',
         'd.set_directory_base' => 'd.directory_base.set',
+        'd.directory.base.set' => 'd.directory_base.set',
+        'view_filter' => 'view.filter',
+        'view_filter_on' => 'view.filter_on',
+        'view_sort_current' => 'view.sort_current',
+        'view_sort_new' => 'view.sort_new',
     ];
 
     // Methods that take command strings as ordinary arguments and run them, so
@@ -185,6 +228,44 @@ class XMLRPCProxy
         'd.delete_tied' => ['hash'],
         'd.check_hash' => ['hash'],
         'network.xmlrpc.size_limit.set' => ['empty', 'size'],
+    ];
+
+    // What the Settings dialog reads: dht.statistics, then one getter per
+    // setting in js/rtorrent.js, under the name js/content.js and
+    // php/methods-*.php give it on each supported daemon (cat stands in for
+    // the ones a daemon no longer has).
+    //
+    // A call of one of these with no arguments reads a setting and does
+    // nothing else, so it is re-emitted bare and sent trusted. rtorrent's own
+    // untrusted gate refuses some of them -- network.listen.port.range on
+    // 0.16.28, network.port_range on a 0.9.8 that reads
+    // UNTRUSTED_CONNECTION -- and the dialog reads them all in one
+    // system.multicall, which goes trusted only when every member does.
+    // The httprpc plugin already reads the same values for the same user on
+    // a trusted connection. A call that passes arguments is not a read this
+    // list vouches for and is judged as it was before.
+    private static $settingsReads = [
+        'dht.statistics', 'cat',
+        'pieces.hash.on_completion', 'network.bind_address', 'dht.port', 'directory.default',
+        'throttle.global_down.max_rate', 'throttle.global_up.max_rate',
+        'network.http.cacert', 'network.http.capath',
+        'network.http.proxy_address', 'network.proxy.http',
+        'network.local_address', 'throttle.max_downloads.div', 'throttle.max_downloads.global',
+        'system.file.max_size', 'pieces.memory.max', 'network.max_open_files',
+        'network.http.max_open', 'network.http.max_total_connections', 'system.sockets.http.max_size',
+        'throttle.max_peers.normal', 'throttle.max_peers.seed', 'throttle.max_uploads',
+        'throttle.max_uploads.global', 'throttle.max_uploads.div',
+        'throttle.min_peers.seed', 'throttle.min_peers.normal', 'protocol.pex',
+        'network.port_open', 'network.port_random', 'network.port_range',
+        'network.listen.port.random', 'network.listen.port.range',
+        'pieces.preload.min_size', 'pieces.preload.min_rate', 'pieces.preload.type',
+        'network.proxy_address', 'network.proxy.global',
+        'network.receive_buffer.size', 'network.send_buffer.size', 'network.scgi.dont_route',
+        'pieces.sync.always_safe', 'pieces.sync.timeout_safe', 'pieces.sync.timeout',
+        'session.path', 'session.use_lock', 'session.on_completion',
+        'system.file.split_size', 'system.file.split_suffix',
+        'trackers.numwant', 'trackers.use_udp',
+        'network.max_open_sockets', 'system.sockets.max_size',
     ];
 
     // Ceiling for network.xmlrpc.size_limit.set. A client raises it to add a
@@ -387,6 +468,16 @@ class XMLRPCProxy
                 $rebuilt['xml'],
                 $trusted,
                 $state . ": " . $methodName . " (" . $rebuilt['kept'] . " params)",
+            );
+        }
+
+        if (in_array($methodName, self::$settingsReads, true)
+            && (count(self::callArgumentValues($xml)) === 0)) {
+            return self::forward(
+                '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
+                . '<methodCall><methodName>' . $methodName . '</methodName><params></params></methodCall>',
+                true,
+                "trusted: " . $methodName . " (settings read)",
             );
         }
 
@@ -943,14 +1034,19 @@ class XMLRPCProxy
      * spells it execute2 or schedule.remove is covered by the same entry, and
      * a name an older daemon registers is read as the command it names first,
      * so the refusal follows the command rather than one of its spellings.
+     * A name in $denyExceptions is refused only by an entry that names it.
      */
     private static function isDenied($name, $deny)
     {
         $name = self::canonicalName($name);
         foreach ($deny as $prefix) {
-            if (strncmp($name, $prefix, strlen($prefix)) === 0) {
-                return true;
+            if (strncmp($name, $prefix, strlen($prefix)) !== 0) {
+                continue;
             }
+            if (($name !== $prefix) && in_array($name, self::$denyExceptions, true)) {
+                continue;
+            }
+            return true;
         }
         return false;
     }

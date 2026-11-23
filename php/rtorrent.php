@@ -172,6 +172,22 @@ class rTorrent
         return(getCmd($command . '=') . implode(',', $quoted));
     }
 
+    /** Why a fast-resume reload of $hash would be refused, or false. Ask before the erase. */
+    public static function reloadRefusal($torrent, $hash, $directory, $isAddPath, $addition)
+    {
+        if (!self::areValidAdditions($addition)) {
+            return('addition');
+        }
+        if ($torrent->hash_info() !== strtoupper($hash)) {
+            return('hash');
+        }
+        $dir = self::parseDirectory($directory, $isAddPath);
+        if (self::hasDirectory($dir) && !rTorrentSettings::get()->correctReportedDirectory($dir)) {
+            return('directory');
+        }
+        return(false);
+    }
+
     public static function sendTorrent($fname, $isStart, $isAddPath, $directory, $label, $saveTorrent, $isFast, $isNew = true, $addition = null)
     {
         self::$directoryRefused = false;
@@ -225,7 +241,7 @@ class rTorrent
             }
             $req = new rXMLRPCRequest();
             $directory = self::parseDirectory($directory, $isAddPath);
-            if ($directory && (strlen($directory) > 0)) {
+            if (self::hasDirectory($directory)) {
                 if (!self::prepareDirectory($directory, $isNew, $req)) {
                     return(false);
                 }
@@ -573,6 +589,15 @@ class rTorrent
         return(strpos(FileUtil::addslash(rtrim($real, '/') . $rest), $realTop) === 0);
     }
 
+    // A replacement must load where the original download reported its data.
+    public static function canReplaceInDirectory($directory)
+    {
+        $reported = $directory;
+        rTorrentSettings::get()->correctReportedDirectory($reported);
+        $load = self::parseDirectory($directory, false);
+        return self::normalizeNewDirectory($load) && $reported === $load;
+    }
+
     /**
      * Resolve, in place, the directory a download is loaded into, and see
      * that it exists. False when it is refused or cannot be made.
@@ -590,8 +615,7 @@ class rTorrent
     protected static function prepareDirectory(&$directory, $isNew, $req)
     {
         if ($isNew) {
-            if (!rTorrentSettings::get()->correctDirectory($directory)
-                || !self::isInsideTopDirectory($directory)) {
+            if (!self::normalizeNewDirectory($directory)) {
                 return(self::directoryFailed());
             }
             $mkdir = new rXMLRPCRequest(new rXMLRPCCommand('execute', ['mkdir','-p',$directory]));
@@ -610,6 +634,12 @@ class rTorrent
             $directory = rTorrentSettings::get()->directory;
         }
         return($directory);
+    }
+
+    private static function normalizeNewDirectory(&$directory)
+    {
+        return rTorrentSettings::get()->correctDirectory($directory)
+            && self::isInsideTopDirectory($directory);
     }
 
     /**
@@ -744,5 +774,10 @@ class rTorrent
     {
         self::$directoryRefused = true;
         return(false);
+    }
+
+    private static function hasDirectory($directory)
+    {
+        return($directory && strlen($directory) > 0);
     }
 }

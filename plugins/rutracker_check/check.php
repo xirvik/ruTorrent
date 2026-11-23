@@ -146,6 +146,18 @@ class ruTrackerChecker
         // entirely when the torrent belongs to no ratio group.
         $existingViews = empty($ratioViews) ? null : self::existingViews();
 
+        $directoryReq = new rXMLRPCRequest(new rXMLRPCCommand('d.get_directory_base', $hash));
+        $directoryReq->important = false;
+        if (!$directoryReq->success() || !isset($directoryReq->val[0])) {
+            FileUtil::toLog('rutracker_check: replacement refused: directory-unreadable ' . $hash);
+            return self::STE_ERROR;
+        }
+        $directory = rXMLRPCRequest::unescapeValue($directoryReq->val[0]);
+        if (!rTorrent::canReplaceInDirectory($directory)) {
+            FileUtil::toLog('rutracker_check: replacement refused: directory-not-reusable ' . $hash);
+            return self::STE_ERROR;
+        }
+
         // Snapshot the logical state and stop/close it in the same multicall so a
         // scheduler action cannot slip between the read and the mutation.
         $req = new rXMLRPCRequest([
@@ -166,10 +178,14 @@ class ruTrackerChecker
             return self::STE_ERROR;
         }
 
-        $baseDir = $req->val[0];
-        $label = rawurldecode($req->val[1]);
-        $throttle = $req->val[2];
-        $connectionSeed = $req->val[3];
+        // rXMLRPCRequest returns every string with a backslash before each
+        // '"' and '\'. The replacement is loaded with these values, quoted
+        // or URL-encoded again, so each is put back into its own bytes first,
+        // and the label is URL-decoded only after that.
+        $baseDir = rXMLRPCRequest::unescapeValue($req->val[0]);
+        $label = rawurldecode(rXMLRPCRequest::unescapeValue($req->val[1]));
+        $throttle = rXMLRPCRequest::unescapeValue($req->val[2]);
+        $connectionSeed = rXMLRPCRequest::unescapeValue($req->val[3]);
         $wasStarted = ($req->val[4] != 0);
         $wasOpen = ($req->val[5] != 0);
         $addition = self::buildReplacementAddition(
@@ -331,8 +347,11 @@ class ruTrackerChecker
             return(true);
         }
 
-        // Skip torrent if its label is in the ignore list
-        if (!is_null($label) && isset($ignoreLabels) && is_array($ignoreLabels) && in_array($label, $ignoreLabels)) {
+        // Skip torrent if its label is in the ignore list. $label is d.custom1
+        // as rtorrent holds it: URL-encoded when ruTorrent set it, as it is
+        // when another client did. The list may name it either way.
+        if (!is_null($label) && isset($ignoreLabels) && is_array($ignoreLabels)
+            && (in_array($label, $ignoreLabels) || in_array(rawurldecode($label), $ignoreLabels))) {
             $state = self::STE_IGNORED;
             self::setState($hash, $state);
             return(true);
@@ -438,7 +457,7 @@ class ruTrackerChecker
         $state = intval($req->val[0]);
         $time = intval($req->val[1]);
         $successful_time = intval($req->val[2]);
-        $label = $req->val[3];
+        $label = rXMLRPCRequest::unescapeValue($req->val[3]);
         return(true);
     }
 
