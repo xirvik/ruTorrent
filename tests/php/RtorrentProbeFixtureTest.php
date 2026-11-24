@@ -1,14 +1,22 @@
 <?php
 
 require_once(__DIR__ . '/TestCase.php');
+require_once(__DIR__ . '/ExpectedDiagnostics.php');
 require_once(__DIR__ . '/PhpProcess.php');
+require_once(__DIR__ . '/RtorrentProbeFixture.php');
 require_once(__DIR__ . '/TestTree.php');
 
 class RtorrentProbeFixtureTest extends TestCase
 {
     public function testDisabledProcessCreationRemovesTheSetupTree()
     {
-        $result = $this->probe('proc_open');
+        // PHP 7.4 warns about a disabled function; PHP 8 throws instead.
+        $result = ExpectedDiagnostics::expect(
+            (PHP_VERSION_ID < 80000) ? ['/^Warning: proc_open\(\) has been disabled for security reasons /'] : [],
+            function () {
+                return $this->probe('proc_open');
+            },
+        );
         $this->assertTrue(
             isset($result['error']) && strpos(
                 $result['error'],
@@ -29,7 +37,12 @@ class RtorrentProbeFixtureTest extends TestCase
 
     public function testFailedDriverWriteRefusesAndStopsTheDaemon()
     {
-        $result = $this->probe('file_put_contents');
+        $result = ExpectedDiagnostics::expect(
+            (PHP_VERSION_ID < 80000) ? ['/^Warning: file_put_contents\(\) has been disabled for security reasons /'] : [],
+            function () {
+                return $this->probe('file_put_contents');
+            },
+        );
         $this->assertTrue(
             isset($result['error']) || $result['ok'] === false,
             'a failed driver write cannot manufacture a cache',
@@ -58,6 +71,31 @@ class RtorrentProbeFixtureTest extends TestCase
             'the real settings handshake produces a warm cache',
         );
     }
+    public function testAListIsAnsweredWithAColumnPerCommandAskedFor()
+    {
+        $hash = str_repeat('B', 40);
+        $responder = new RtorrentProbeResponder($hash);
+        // An rtorrent older than 0.16.16 is asked d.multicall2, with the same
+        // parameters.
+        foreach ([['d.multicall', 2], ['d.multicall2', 5], ['d.multicall', 37]] as [$method, $columns]) {
+            $body = '<?xml version="1.0" encoding="UTF-8"?><methodCall><methodName>' . $method . '</methodName><params>' . "\r\n"
+                . '<param><value><string></string></value></param>' . "\r\n"
+                . '<param><value><string>main</string></value></param>' . "\r\n"
+                . '<param><value><string>d.hash=</string></value></param>' . "\r\n";
+            for ($i = 1; $i < $columns; $i++) {
+                $body .= '<param><value><string>d.views.has=rat_' . $i . '</string></value></param>' . "\r\n";
+            }
+            $body .= '</params></methodCall>';
+            $row = $responder($body);
+            $this->assertTrue(count($row) === $columns, $method . ': ' . $columns . ' columns asked, ' . count($row) . ' answered');
+            $this->assertTrue($row[0] === $hash, 'the row starts with the hash');
+            $this->assertTrue(
+                count(array_filter(array_slice($row, 1), 'is_int')) === $columns - 1,
+                'every column after the hash is an integer',
+            );
+        }
+    }
+
     private function probe($disabled, $blockDriver = false, $partialWrite = false)
     {
         $root = sys_get_temp_dir() . '/probe-cleanup-test-' . uniqid('', true);

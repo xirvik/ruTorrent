@@ -86,7 +86,9 @@ class TorrentAdditionCommandTest extends TestCase
         $settings->directory = $this->base;
 
         $property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-        $property->setAccessible(true);
+        if (PHP_VERSION_ID < 80100) {
+            $property->setAccessible(true);
+        }
         $this->previousSettings = $property->getValue();
         $property->setValue(null, $settings);
 
@@ -106,7 +108,9 @@ class TorrentAdditionCommandTest extends TestCase
     public function tearDown()
     {
         $property = new ReflectionProperty('rTorrentSettings', 'theSettings');
-        $property->setAccessible(true);
+        if (PHP_VERSION_ID < 80100) {
+            $property->setAccessible(true);
+        }
         $property->setValue(null, $this->previousSettings);
 
         foreach (glob($this->base . '/*') as $path) {
@@ -394,7 +398,7 @@ class TorrentAdditionCommandTest extends TestCase
         file_put_contents($driver, $code);
 
         $this->takeLog();
-        exec(escapeshellarg(PHP_BINARY) . ' -d error_reporting=0 '
+        exec(escapeshellarg(PHP_BINARY) . ' '
             . escapeshellarg($driver) . ' 2>&1', $ignored);
         @unlink($driver);
         return $this->takeLog();
