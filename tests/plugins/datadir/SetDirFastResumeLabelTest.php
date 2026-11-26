@@ -71,18 +71,19 @@ class SetDirFastResumeLabelTest extends TestCase
         $dest = $this->base . '/dest';
         $this->makeDir($session);
         $this->makeDir($dest);
+        $this->makeDir($this->base . '/profile/users/' . self::USER . '/torrents');
         file_put_contents($session . self::HASH . '.torrent', $this->torrentBytes('subx', ['f.bin']));
         $this->assertTrue(
             RtorrentProbeFixture::warmSettingsCache($this->base . '/profile/users/' . self::USER, '', $this->base . '/dl', $session),
             'the settings cache is warmed',
         );
         $this->daemon = new FakeRtorrentDaemon([
-            // d.is_open, d.is_active
-            ['0', '0'],
+            // d.is_open, d.is_active, d.get_state
+            ['0', '0', '0'],
             // get_session, d.get_tied_to_file, d.get_custom1, d.get_connection_seed, d.get_throttle_name
             [$session, '', $label, '', ''],
-            // d.set_directory, d.erase, the load
-            ['0'], ['0'], ['0'],
+            // d.set_directory, d.erase, the load, download_list
+            ['0'], ['0'], ['0'], [self::HASH],
         ], $this->base . '/calls.log');
         $run = $this->runPhp($this->driver(
             'echo rtSetDataDir(' . var_export(self::HASH, true) . ', ' . var_export($dest, true) . ', true, false, true, false) ? "ok" : "failed";',
